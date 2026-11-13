@@ -1,22 +1,21 @@
-import os
-
 from dotenv import load_dotenv
+
+load_dotenv()
 from langgraph.constants import END
 from langgraph.graph import StateGraph
-from typing import Optional
+from typing import Optional, Iterator
 
 from app.core.logger import logger
-from app.import_process.agent.nodes.node_bge_embedding import NodeBgeEmbedding
-from app.import_process.agent.nodes.node_document_split import NodeDocumentSplit
-from app.import_process.agent.nodes.node_entry import NodeEntry
-from app.import_process.agent.nodes.node_import_milvus import NodeImportMilvus
-from app.import_process.agent.nodes.node_item_name_recognition import NodeItemNameRecognition
-from app.import_process.agent.nodes.node_md_img import NodeMdImg
-from app.import_process.agent.nodes.node_pdf_to_md import NodePdfToMd
-from app.import_process.agent.state import ImportGraphState, create_default_state
+from app.processor.import_process.agent.nodes.node_bge_embedding import NodeBgeEmbedding
+from app.processor.import_process.agent.nodes.node_document_split import NodeDocumentSplit
+from app.processor.import_process.agent.nodes.node_entry import NodeEntry
+from app.processor.import_process.agent.nodes.node_import_milvus import NodeImportMilvus
+from app.processor.import_process.agent.nodes.node_item_name_recognition import NodeItemNameRecognition
+from app.processor.import_process.agent.nodes.node_md_img import NodeMdImg
+from app.processor.import_process.agent.nodes.node_pdf_to_md import NodePdfToMd
+from app.processor.import_process.state import ImportGraphState, create_default_state
 
 # 初始化环境变量（类加载前执行，保证全局生效）
-load_dotenv()
 
 
 class KBImportWorkflow:
@@ -24,9 +23,10 @@ class KBImportWorkflow:
     知识库导入工作流类
     封装LangGraph工作流的构建、编译、执行逻辑，支持自定义配置和多实例运行
     """
-    def __init__(self):
+    def __init__(self, config=None):
         """初始化工作流：创建状态图、注册节点、定义路由规则"""
         # 1. 初始化LangGraph状态图
+        self.config = config
         self.workflow = StateGraph(ImportGraphState)
         # 2. 初始化所有业务节点（实例属性，支持多实例隔离）
         self._init_nodes()
@@ -39,13 +39,13 @@ class KBImportWorkflow:
 
     def _init_nodes(self):
         """初始化所有业务节点（私有方法，封装节点创建逻辑）"""
-        self.node_entry = NodeEntry()
-        self.node_pdf_to_md = NodePdfToMd()
-        self.node_md_img = NodeMdImg()
-        self.node_document_split = NodeDocumentSplit()
-        self.node_item_name_recognition = NodeItemNameRecognition()
-        self.node_bge_embedding = NodeBgeEmbedding()
-        self.node_import_milvus = NodeImportMilvus()
+        self.node_entry = NodeEntry(self.config)
+        self.node_pdf_to_md = NodePdfToMd(self.config)
+        self.node_md_img = NodeMdImg(self.config)
+        self.node_document_split = NodeDocumentSplit(self.config)
+        self.node_item_name_recognition = NodeItemNameRecognition(self.config)
+        self.node_bge_embedding = NodeBgeEmbedding(self.config)
+        self.node_import_milvus = NodeImportMilvus(self.config)
 
     def _register_nodes(self):
         """注册所有节点到工作流（私有方法，统一管理节点注册）"""
@@ -58,7 +58,8 @@ class KBImportWorkflow:
         self.workflow.add_node("node_bge_embedding", self.node_bge_embedding)
         self.workflow.add_node("node_import_milvus", self.node_import_milvus)
 
-    def _route_after_entry(self, state: ImportGraphState) -> str:
+    @staticmethod
+    def _route_after_entry(state: ImportGraphState) -> str:
         """入口节点后的条件路由函数（私有方法，封装路由逻辑）"""
         if state.get("is_md_read_enabled"):
             return "node_md_img"
@@ -95,14 +96,13 @@ class KBImportWorkflow:
             self._compiled_app = self.workflow.compile()
         return self._compiled_app
 
-    def run(self, initial_state: ImportGraphState, stream: bool = False) -> ImportGraphState:
+    def run(self, initial_state: ImportGraphState, stream: bool = False) -> ImportGraphState | Iterator[dict]:
         """
         统一执行入口，支持切换invoke/stream
         :param initial_state:  初始状态对象
         :param stream: 是否是流式输出
         :return: 执行完成后的状态对象
         """
-        """"""
         if not self._compiled_app:
             self.compile()
         if stream:
@@ -111,7 +111,7 @@ class KBImportWorkflow:
             return self._compiled_app.invoke(initial_state)
 
     @classmethod
-    def create_and_run(cls, initial_state: ImportGraphState, stream: bool = False) -> ImportGraphState:
+    def create_and_run(cls, initial_state: ImportGraphState, stream: bool = False) -> ImportGraphState | Iterator[dict]:
         """
         快捷方法：创建工作流实例并立即执行（兼容原有函数式调用习惯）
         :param initial_state: 初始状态对象
@@ -122,25 +122,22 @@ class KBImportWorkflow:
         return workflow.run(initial_state, stream)
 
 
-# ===================== 用法示例 =====================
+def main():
+    """命令行一次只执行一次导入，可选按节点输出进度。"""
+    import argparse
+    parser = argparse.ArgumentParser(description="导入 PDF 或 Markdown 到知识库")
+    parser.add_argument("file", help="本地 PDF 或 Markdown 路径")
+    parser.add_argument("--stream", action="store_true", help="输出每个节点的完成信息")
+    args = parser.parse_args()
+    workflow = KBImportWorkflow()
+    state = create_default_state(local_file_path=args.file)
+    if args.stream:
+        for update in workflow.run(state, stream=True):
+            logger.info("完成节点：{}", ", ".join(update))
+    else:
+        result = workflow.run(state)
+        logger.info("导入完成，任务 {}，切片 {} 条", result["task_id"], result["imported_count"])
+
 
 if __name__ == "__main__":
-
-    # 定义初始状态
-    init_state = create_default_state(
-        task_id="task_demo",
-        local_file_path="万用表的使用.pdf"
-    )
-
-    # 用法1：标准类用法（推荐，支持多实例）
-    # 创建工作流实例
-    kb_import_app = KBImportWorkflow()
-    # 执行工作流
-    final_state = kb_import_app.run(init_state)
-    logger.info(f"工作流执行完成！最终状态: {final_state}")
-
-    # 用法2：快捷调用
-    for chunk in KBImportWorkflow.create_and_run(init_state, stream=True):
-        # chunk：字典类型
-        logger.info(chunk.keys())
-        logger.info(chunk.items())
+    main()

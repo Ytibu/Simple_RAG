@@ -185,3 +185,8 @@ def clear_task(task_id: str):
     _tasks_done_list.pop(task_id, None)
     _tasks_status.pop(task_id, None)
     _tasks_result.pop(task_id, None)
+
+def remove_running_task(task_id: str, node_name: str) -> None:
+    """节点失败时移除运行标记，不把失败节点标为已完成。"""
+    _ensure_task(task_id)
+    _tasks_running_list[task_id] = [n for n in _tasks_running_list[task_id] if n != node_name]

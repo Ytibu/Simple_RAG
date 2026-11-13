@@ -38,6 +38,9 @@ class ImportGraphState(TypedDict):
 
     # --- 数据库相关 ---
     embeddings_content: list # 包含向量数据的列表，准备写入 Milvus
+    document_id: str      # 本次导入标识，也是存储记录的关联字段
+    item_embedding: dict # 主体名称的稠密及稀疏向量
+    imported_count: int   # 成功写入的切片数量
 
 
 # 建议定一个初始化对象，方便后续使用
@@ -60,7 +63,10 @@ graph_default_state: ImportGraphState = {
     "md_content": "",
     "chunks": [],
     "item_name": "",
-    "embeddings_content": []
+    "embeddings_content": [],
+    "document_id": "",
+    "item_embedding": {},
+    "imported_count": 0
 }
 
 def create_default_state(**overrides) -> ImportGraphState:
@@ -89,19 +95,3 @@ def get_default_state() -> ImportGraphState:
     返回一个新的状态实例，避免全局变量污染
     """
     return copy.deepcopy(graph_default_state)
-
-
-if __name__ == "__main__":
-    """
-    测试
-    """
-
-    # ❌ 缺少默认参数
-    # initial_state = ImportGraphState(
-    #     task_id="task_001",
-    #     local_file_path="万用表的使用.txt"
-    # )
-
-    # ✅ 创建默认状态
-    state = create_default_state(local_file_path="万用表RS-12的使用.pdf")
-    logger.info(state)

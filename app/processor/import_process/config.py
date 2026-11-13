@@ -9,8 +9,8 @@ from typing import Set, Optional
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
-
+load_dotenv(override=True)
+# 确保能够直接加载.env的环境变量并覆盖系统环境变量
 
 @dataclass
 class ImportConfig:
@@ -42,7 +42,7 @@ class ImportConfig:
         default_factory=lambda: os.getenv("ITEM_MODEL", "")
     )
     default_model: str = field(
-        default_factory=lambda: os.getenv("MODEL", "")
+        default_factory=lambda: os.getenv("LLM_DEFAULT_MODEL", "")
     )
 
     # ==================== Milvus 配置 ====================
@@ -73,13 +73,15 @@ class ImportConfig:
     minio_bucket: str = field(
         default_factory=lambda: os.getenv("MINIO_BUCKET_NAME", "")
     )
-    minio_secure: bool = False
+    minio_secure: bool = field(default_factory=lambda: os.getenv("MINIO_SECURE", "false").lower() in {"1", "true"})
 
     # ==================== 向量配置 ====================
+    # BGE-M3 为 1024 维，与云端 EMBEDDING_DIM 独立。
     embedding_dim: int = field(
-        default_factory=lambda: int(os.getenv("EMBEDDING_DIM", "1024"))
+        default_factory=lambda: int(os.getenv("BGE_EMBEDDING_DIM", "1024"))
     )
     embedding_batch_size: int = 8
+    output_root: str = field(default_factory=lambda: os.getenv("MD_ROOT_DIR", "./temp-files"))
 
     # ==================== 速率限制 ====================
     requests_per_minute: int = 15  # 图片总结 API 速率限制
@@ -99,7 +101,7 @@ class ImportConfig:
 _config: Optional[ImportConfig] = None
 
 
-def get_config() -> ImportConfig:
+def get_config() -> ImportConfig | None:
     """获取配置单例"""
     global _config
     if _config is None:

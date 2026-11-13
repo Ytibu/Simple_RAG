@@ -1,4 +1,3 @@
-from pymilvus.model.hybrid import BGEM3EmbeddingFunction
 from app.core.logger import logger
 from app.conf.embedding_config import embedding_config
 
@@ -20,7 +19,7 @@ def get_bge_m3_ef():
     # 本地有可以使用本地地址！ 没有使用 "BAAI/bge-m3" 会自动下载！ 如果云端部署也可以使用url地址！
     model_name = embedding_config.bge_m3_path or "BAAI/bge-m3"
     device = embedding_config.bge_device or "cpu"
-    use_fp16 = embedding_config.bge_fp16 or False
+    use_fp16 = bool(embedding_config.bge_fp16) and device != "cpu"
 
     # 打印模型初始化配置，便于问题排查
     logger.info(
@@ -35,6 +34,7 @@ def get_bge_m3_ef():
 
     try:
         # 初始化BGE-M3模型，开启原生L2归一化（适配Milvus IP内积检索）
+        from pymilvus.model.hybrid import BGEM3EmbeddingFunction
         _bge_m3_ef = BGEM3EmbeddingFunction(
             model_name=model_name,
             device=device,

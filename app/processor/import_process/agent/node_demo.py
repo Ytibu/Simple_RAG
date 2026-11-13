@@ -1,7 +1,7 @@
 # app/import_process/agent/nodes/node_demo.py
 from app.core.logger import logger
-from app.import_process.agent.node_base import NodeBase
-from app.import_process.agent.state import ImportGraphState, create_default_state
+from app.processor.import_process.agent.node_base import NodeBase
+from app.processor.import_process.state import ImportGraphState, create_default_state
 
 class NodeDemo(NodeBase):
     name: str = "node_demo"

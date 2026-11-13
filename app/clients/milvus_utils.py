@@ -1,10 +1,51 @@
-import os
 from pymilvus import MilvusClient, AnnSearchRequest, WeightedRanker
 from app.conf.milvus_config import milvus_config
 from app.core.logger import logger
 
 # 全局Milvus客户端实例，实现单例复用
 _milvus_client = None
+
+
+def ensure_import_collection(client, name, dimension, item=False):
+    """建立导入所需 schema；已有集合不兼容时停止，避免修改历史数据。"""
+    from pymilvus import DataType
+    fields = {
+        "chunk_id": DataType.INT64,
+        "document_id": DataType.VARCHAR,
+        "item_name": DataType.VARCHAR,
+        "dense_vector": DataType.FLOAT_VECTOR,
+        "sparse_vector": DataType.SPARSE_FLOAT_VECTOR,
+    }
+    if not item:
+        fields.update(content=DataType.VARCHAR, title=DataType.VARCHAR,
+                      parent_title=DataType.VARCHAR, metadata=DataType.JSON)
+    if client.has_collection(collection_name=name):
+        description = client.describe_collection(collection_name=name)
+        existing = {f["name"]: f for f in description["fields"]}
+        if description.get("auto_id", False):
+            raise ValueError(f"集合 {name} 使用自动主键，与导入 schema 不兼容")
+        for field, dtype in fields.items():
+            if field not in existing or existing[field]["type"] != dtype:
+                raise ValueError(f"集合 {name} 字段 {field} 类型不兼容")
+        if not existing["chunk_id"].get("is_primary"):
+            raise ValueError(f"集合 {name} 的 chunk_id 必须为主键")
+        if int(existing["dense_vector"]["params"]["dim"]) != dimension:
+            raise ValueError(f"集合 {name} 向量维度不匹配，需使用独立集合或迁移数据")
+        return
+    schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+    for field, dtype in fields.items():
+        options = {}
+        if field == "chunk_id":
+            options["is_primary"] = True
+        elif dtype == DataType.VARCHAR:
+            options["max_length"] = 65535 if field == "content" else 4096
+        elif field == "dense_vector":
+            options["dim"] = dimension
+        schema.add_field(field_name=field, datatype=dtype, **options)
+    indexes = client.prepare_index_params()
+    indexes.add_index(field_name="dense_vector", index_type="AUTOINDEX", metric_type="COSINE")
+    indexes.add_index(field_name="sparse_vector", index_type="SPARSE_INVERTED_INDEX", metric_type="IP")
+    client.create_collection(collection_name=name, schema=schema, index_params=indexes)
 
 
 def get_milvus_client():

@@ -1,7 +1,7 @@
 import sys
 
 from app.core.logger import logger
-from app.import_process_v1.agent.state import ImportGraphState
+from app.processor.import_process.state import ImportGraphState
 
 
 def node_1(state: ImportGraphState) -> ImportGraphState:
