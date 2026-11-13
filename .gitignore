@@ -166,3 +166,4 @@ volumes/
 logs/
 # 导入产生的 Markdown、图片、切片与向量
 temp-files/
+resource/

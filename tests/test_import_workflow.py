@@ -28,7 +28,7 @@ class ImportTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.config = ImportConfig(output_root=str(self.root / 'output'), embedding_dim=3,
+        self.config = ImportConfig(output_root=str(self.root / 'output'), embedding_dim=3, use_llm=True,
                                    max_content_length=50, embedding_batch_size=2,
                                    chunks_collection='chunks', item_name_collection='items')
 
@@ -58,6 +58,25 @@ class ImportTests(unittest.TestCase):
         self.assertGreater(encode.call_count, 1)
         self.assertEqual(client.create_collection.call_count, 2)
         client.close.assert_called_once()
+
+    def test_no_llm_import_uploads_images_without_api_calls(self):
+        self.config.use_llm = False
+        source = self.source('# 手册\n![插图](image.png)\n连接方式说明。')
+        (self.root / 'image.png').write_bytes(b'image')
+        client = MagicMock()
+        client.has_collection.return_value = False
+        with patch(NODES + 'node_md_img.describe_image') as describe, \
+             patch(NODES + 'node_md_img.upload_image', return_value='s3://bucket/image') as upload, \
+             patch(NODES + 'node_item_name_recognition.recognize_item') as recognize, \
+             patch(NODES + 'node_bge_embedding.encode_texts', side_effect=fake_encode), \
+             patch(NODES + 'node_import_milvus.get_client', return_value=client):
+            result = KBImportWorkflow(self.config).run(create_default_state(local_file_path=str(source)))
+        describe.assert_not_called()
+        recognize.assert_not_called()
+        upload.assert_called_once()
+        self.assertEqual(result['item_name'], source.stem)
+        self.assertGreater(result['imported_count'], 0)
+        self.assertNotIn('图片说明：', result['md_content'])
 
     def test_pdf_branch_stream(self):
         source = self.source('fake pdf bytes', '.PDF')
@@ -157,6 +176,20 @@ class ImportTests(unittest.TestCase):
             with self.assertRaises(LLMError):
                 KBImportWorkflow(self.config).run(create_default_state(local_file_path=str(self.source())))
         encode.assert_not_called()
+
+    def test_text_pdf_real_extraction(self):
+        import pymupdf
+        from app.processor.import_process.agent.nodes.node_pdf_to_md import convert_pdf
+        path = self.root / 'real.pdf'
+        with pymupdf.open() as document:
+            page = document.new_page()
+            page.insert_text((72, 72), 'H3C wireless gateway installation and connection instructions.')
+            document.save(path)
+        with patch(NODES + 'node_pdf_to_md.convert_mineru_pdf') as ocr:
+            result = convert_pdf(str(path), str(self.root / 'parsed'))
+        self.assertIn('H3C wireless gateway', result)
+        self.assertIn('第 1 页', result)
+        ocr.assert_not_called()
 
     def test_pdf_adapter_enables_local_model(self):
         from app.processor.import_process.agent.nodes.node_pdf_to_md import convert_pdf

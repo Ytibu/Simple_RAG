@@ -29,6 +29,7 @@ class ImportConfig:
     )
 
     # ==================== LLM 配置 ====================
+    use_llm: bool = field(default_factory=lambda: os.getenv("IMPORT_USE_LLM", "true").lower() in {"1", "true"})
     openai_api_base: str = field(
         default_factory=lambda: os.getenv("OPENAI_API_BASE", "")
     )

@@ -128,8 +128,13 @@ def main():
     parser = argparse.ArgumentParser(description="导入 PDF 或 Markdown 到知识库")
     parser.add_argument("file", help="本地 PDF 或 Markdown 路径")
     parser.add_argument("--stream", action="store_true", help="输出每个节点的完成信息")
+    parser.add_argument("--no-llm", action="store_true", help="不调用大语言模型；图片仅上传，主体采用文件名")
     args = parser.parse_args()
-    workflow = KBImportWorkflow()
+    from app.processor.import_process.config import ImportConfig
+    config = ImportConfig.from_env()
+    if args.no_llm:
+        config.use_llm = False
+    workflow = KBImportWorkflow(config)
     state = create_default_state(local_file_path=args.file)
     if args.stream:
         for update in workflow.run(state, stream=True):

@@ -57,14 +57,17 @@ class NodeMdImg(NodeBase):
                 if not path.is_file() or path.suffix.lower() not in self.config.image_extensions:
                     raise ValueError(f"图片不存在或格式不支持：{reference}")
                 if path not in cache:
-                    apply_api_rate_limit(times, self.config.requests_per_minute)
                     context = content[max(0, match.start() - self.config.img_content_length):match.start()]
-                    description = describe_image(path, context, self.config.vl_model)
+                    description = ""
+                    if self.config.use_llm:
+                        apply_api_rate_limit(times, self.config.requests_per_minute)
+                        description = describe_image(path, context, self.config.vl_model)
                     object_name = f"{state['document_id']}/images/{len(cache)}{path.suffix.lower()}"
                     url = upload_image(path, object_name, self.config)
                     cache[path] = (url, description)
                 url, description = cache[path]
-                return f"![{match.group(1)}]({url})\n\n图片说明：{description}\n"
+                image = f"![{match.group(1)}]({url})"
+                return image + (f"\n\n图片说明：{description}\n" if description else "")
 
             processed = IMAGE_PATTERN.sub(replace, content)
             if not processed.strip():
