@@ -5,12 +5,13 @@ from pathlib import Path
 
 from app.processor.import_process import create_default_state
 from app.processor.import_process.agent.kb_import_workflow import KBImportWorkflow
-from app.processor.import_process.config import get_config
+from app.conf.config import get_config
 
 
 def main():
     parser = argparse.ArgumentParser(description='真实文件导入验收')
     parser.add_argument('--file', type=Path, help='默认选 resource 中最小的 PDF')
+    parser.add_argument('--output-dir', type=Path, help='本次导入输出目录')
     parser.add_argument('--bge-model-path', type=Path, help='已有本地 BGE 模型目录')
     parser.add_argument('--resume', type=Path, help='从已保存状态继续未完成的节点')
     parser.add_argument('--no-llm', action='store_true', help='禁用图片描述及主体识别模型调用')
@@ -48,7 +49,10 @@ def main():
         else:
             source = args.file or min(Path('resource').rglob('*.pdf'), key=lambda p: p.stat().st_size)
             print('SOURCE', source, flush=True)
-            for update in workflow.run(create_default_state(local_file_path=str(source)), stream=True):
+            from uuid import uuid4
+            directory = args.output_dir or Path(config.output_root) / uuid4().hex
+            initial_state = create_default_state(local_file_path=str(source), local_dir=str(directory))
+            for update in workflow.run(initial_state, stream=True):
                 for node, state in update.items():
                     print('DONE', node, 'chunks', len(state.get('chunks', [])), flush=True)
                     Path(state['local_dir'], 'state.json').write_text(

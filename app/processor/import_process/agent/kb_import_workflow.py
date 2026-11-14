@@ -127,15 +127,19 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="导入 PDF 或 Markdown 到知识库")
     parser.add_argument("file", help="本地 PDF 或 Markdown 路径")
+    parser.add_argument("--output-dir", help="本次导入输出目录，默认在配置的输出根目录下创建独立目录")
     parser.add_argument("--stream", action="store_true", help="输出每个节点的完成信息")
     parser.add_argument("--no-llm", action="store_true", help="不调用大语言模型；图片仅上传，主体采用文件名")
     args = parser.parse_args()
-    from app.processor.import_process.config import ImportConfig
+    from app.conf.config import ImportConfig
     config = ImportConfig.from_env()
     if args.no_llm:
         config.use_llm = False
     workflow = KBImportWorkflow(config)
-    state = create_default_state(local_file_path=args.file)
+    from pathlib import Path
+    from uuid import uuid4
+    directory = args.output_dir or str(Path(config.output_root) / uuid4().hex)
+    state = create_default_state(local_file_path=args.file, local_dir=directory)
     if args.stream:
         for update in workflow.run(state, stream=True):
             logger.info("完成节点：{}", ", ".join(update))

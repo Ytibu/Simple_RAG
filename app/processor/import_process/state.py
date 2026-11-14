@@ -23,7 +23,7 @@ class ImportGraphState(TypedDict):
     is_vllm_enabled: bool
 
     # --- 路径相关 ---
-    local_dir: str        # 当前工作目录或输出目录
+    local_dir: str        # 调用方指定的本次导入输出目录，入口节点直接使用
     local_file_path: str  # 原始输入文件路径
     file_title: str       # 文件标题（文件名去后缀）
     pdf_path: str         # PDF 文件路径 (如果输入是PDF)
@@ -78,7 +78,7 @@ def create_default_state(**overrides) -> ImportGraphState:
     ✅ 避免遗漏字段
     ✅ 深拷贝隔离，避免污染全局状态
     ✅ 代码更简洁、可读性更好
-    用法:state = create_default_state(task_id="task_001", local_file_path="doc.pdf")
+    用法:state = create_default_state(task_id="task_001", local_file_path="doc.pdf", local_dir="temp-files/task_001")
     :param overrides: 要覆盖的字段（关键字参数解包）
     :return: 新的状态实例
     """

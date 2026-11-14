@@ -1,107 +1,112 @@
 # 文件导入流程
 
-## 范围与节点
+## 当前范围与节点
 
-本次实现文件导入，不实现 `app/processor/query_process/` 中的检索流程。
-统一入口是 `app/processor/import_process/agent/kb_import_workflow.py`，旧入口 `main_praph.py` 复用同一张图。
+所有 PDF 统一使用 MinerU 云 API 解析，包括文字型 PDF 和扫描件；OCR、版面分析、表格及公式处理均由云服务完成。项目不再包含本地 PDF 解析器或解析模式切换。Markdown 输入直接进入图片处理节点。检索功能尚未实现。
 
-| 节点 | 输入与输出 |
+统一工作流位于 `app/processor/import_process/agent/kb_import_workflow.py`，旧入口 `main_praph.py` 复用同一张图。
+
+| 节点 | 职责 |
 | --- | --- |
-| `node_entry` | 校验存在的 PDF、MD、Markdown 文件，生成导入标识和独立输出目录，设置路由 |
-| `node_pdf_to_md` | 文字型 PDF 使用 PyMuPDF 提取文字与图片，扫描页使用 MinerU OCR；Markdown 输入跳过此节点 |
-| `node_md_img` | 读取 Markdown，将本地图片上传 MinIO，并调用视觉模型生成描述；远程图片保留 |
-| `node_document_split` | 按标题层级分节，再按段落、句子和字符边界切片，保留标题、父标题、来源及顺序 |
-| `node_item_name_recognition` | 使用前几个切片调用文本模型，解析 JSON 中的主体名称；调用方可传 `item_name` 跳过识别 |
-| `node_bge_embedding` | 分批生成切片和主体名称的 BGE-M3 稠密、稀疏向量，校验数量、维度和有限值 |
-| `node_import_milvus` | 检查或创建两个集合，分批 upsert 切片和主体记录，全部成功后报告导入数量 |
+| `node_entry` | 校验 PDF/Markdown 文件，生成文档标识，使用调用方的 `state.local_dir` 创建输出目录并设置路由 |
+| `node_pdf_to_md` | 上传 PDF 到 MinerU 云 API，轮询、下载并解压结果，将实际 Markdown 路径写入状态 |
+| `node_md_img` | 上传 Markdown 中的本地图片到 MinIO；启用 LLM 时生成视觉描述 |
+| `node_document_split` | 按 Markdown 标题及长度切片，保留标题、父标题、来源和顺序 |
+| `node_item_name_recognition` | 使用文本模型识别主体；禁用 LLM 时使用文件名，调用方也可直接指定主体 |
+| `node_bge_embedding` | 本地 BGE-M3 分批生成切片和主体的稠密、稀疏向量，校验数量及维度 |
+| `node_import_milvus` | 检查或创建集合，upsert 切片和主体向量，全部成功后报告导入数量 |
 
-## 准备与执行
+## MinerU 云 API 配置
 
-使用项目已有的 Python 3.11 虚拟环境及依赖。以 `.env.example` 为参考配置本地 `.env`，至少检查：
+配置定义在 `app/conf/mineru_config.py`，从本地 `.env` 读取。真实 token 不提交 Git。
 
-- `OPENAI_API_KEY`、`OPENAI_API_BASE`、`ITEM_MODEL` 和有本地图片时使用的 `VL_MODEL`。
-- `BGE_M3_PATH`、`BGE_DEVICE`；BGE-M3 默认维度为 `BGE_EMBEDDING_DIM=1024`，独立于云端 `EMBEDDING_DIM`。CPU 自动禁用 FP16。
-- `MILVUS_URL`、`CHUNKS_COLLECTION`、`ITEM_NAME_COLLECTION`。两个集合名必须不同。
-- 有本地图片时，配置 `MINIO_ENDPOINT`、访问凭据、`MINIO_BUCKET_NAME`；HTTPS 可设 `MINIO_SECURE=true`。
-- `MD_ROOT_DIR`：输出根目录，默认 `./temp-files/`。每次完整导入创建新目录，不修改原文档。
-- 文字型 PDF 使用已安装的 PyMuPDF，无需额外 OCR 模型；含扫描页的 PDF 使用本地 MinerU 模型及其 `magic-pdf.json` 配置，不调用 `MINERU_BASE_URL` 云端接口。OCR 相关模型及完整运行依赖须提前准备。
-
-在仓库根目录执行一次导入：
-
-```powershell
-uv run python -m app.processor.import_process.agent.kb_import_workflow "path/to/manual.pdf"
-uv run python -m app.processor.import_process.agent.kb_import_workflow "path/to/manual.md" --stream
+```dotenv
+MINERU_BASE_URL=https://mineru.net/api/v4
+MINERU_API_TOKEN=在本地填写真实token
+MINERU_MODEL_VERSION=vlm
+MINERU_REQUEST_TIMEOUT=60
+MINERU_TASK_TIMEOUT=600
+MINERU_POLL_INTERVAL=3
 ```
 
-也可使用已有环境，避免 uv 同步环境：
+请求流程：`POST /file-urls/batch` 申请地址 → PUT 上传 PDF → `GET /extract-results/batch/{batch_id}` 轮询 → 下载结果 ZIP → 校验归档路径并解压。协议参考 [MinerU 官方文档](https://mineru.net/doc/docs/index_en/)。
+
+Bearer token 只发送给云 API，不附带到签名上传或下载请求。日志和任务记录不输出 token 或签名 URL。缺少配置、请求失败、任务失败、超时、无有效正文时，节点报错并停止导入。
+
+本地 PDF 解析分支及其切换参数已移除，不再需要安装或配置本地 MinerU OCR 模型。模型下载缓存仍可能供 BGE 使用，与 PDF 云端解析无关。
+
+## 其他运行配置
+
+- LLM：`OPENAI_API_KEY`、`OPENAI_API_BASE`、`ITEM_MODEL`、`VL_MODEL`。`IMPORT_USE_LLM=false` 或 `--no-llm` 只关闭图片描述和主体识别，PDF 仍调用 MinerU 云 API。
+- 向量：`BGE_M3_PATH` 指向完整本地模型目录，`BGE_DEVICE` 指定设备；CPU 自动禁用 FP16。`BGE_EMBEDDING_DIM=1024` 与云端嵌入的 `EMBEDDING_DIM` 独立。
+- Milvus：`MILVUS_URL`、`CHUNKS_COLLECTION`、`ITEM_NAME_COLLECTION`；两个集合名必须不同。
+- MinIO：`MINIO_ENDPOINT`、访问凭据、`MINIO_BUCKET_NAME`；HTTPS 可设 `MINIO_SECURE=true`。
+- `MD_ROOT_DIR`：命令行默认输出根目录。命令行在其下生成独立目录，再通过 `state.local_dir` 传入节点。
+
+## 执行与输出目录
+
+使用项目现有 Python 3.11 环境，在仓库根目录执行：
 
 ```powershell
-.venv/Scripts/python.exe -m app.processor.import_process.agent.kb_import_workflow "path/to/manual.md"
+.venv/Scripts/python.exe -m app.processor.import_process.agent.kb_import_workflow "path/to/manual.pdf" --stream
+.venv/Scripts/python.exe -m app.processor.import_process.agent.kb_import_workflow "path/to/manual.pdf" --output-dir "temp-files/manual-import"
 ```
 
-流程会调用模型 API、上传图片并写数据库。输出目录包含 `processed.md`、`chunks.json`、`embeddings.json`，PDF 还会生成 `document.md` 和 `images/`。
+直接调用时必须明确传入本次导入目录，入口节点不追加 UUID 子目录：
 
-## 存储约定与边界
+```python
+state = create_default_state(
+    local_file_path="resource/doc/manual.pdf",
+    local_dir="temp-files/manual-import",
+)
+result = KBImportWorkflow().run(state)
+```
 
-切片集合使用 INT64 `chunk_id` 主键，以及 `document_id`、`content`、`title`、`parent_title`、`item_name`、`metadata`、`dense_vector`、`sparse_vector`。主体集合保存首个切片主键、文档标识、主体名称及两类向量。稠密向量使用 COSINE 索引，稀疏向量使用 IP 索引。
+目录不存在时创建，已存在时可使用；后续节点会写入固定名称的结果文件，不同任务应使用不同目录。原输入文件不会被修改。
 
-已有集合字段或维度不兼容时直接报错，不删除或重建历史集合。相同状态的入库节点可使用 upsert 重试；重新运行整个导入会创建新文档记录，不会自动去重。跨集合写入没有事务，失败可能留下部分数据，应保留状态后重试入库节点。
+输出包含：
 
-图片上传保持桶原有权限，不自动公开桶；文档保存持久的 `s3://bucket/object` 引用。需要展示时由调用方按权限生成访问链接。当前处理普通内联 Markdown 图片和 `<含空格路径>`，不解析 HTML 图片、引用式图片或远程图片内容。
+- `mineru_task.json`：云端批次 ID 和状态。
+- `mineru_result.zip`：云端原始解析结果。
+- `mineru/full.md` 与图片目录：保留结果中的相对路径，`state.md_path` 指向此 Markdown。
+- `processed.md`：图片上传并按需补充描述后的正文。
+- `chunks.json`、`embeddings.json`：切片及入库向量记录。
 
-目前仅支持普通切分，高级切分开关启用时明确报错。旧状态中的 API/vLLM 切分标记仅为兼容字段，不会启用额外模型服务。
+## 存储约定
 
-## 验证记录
+切片集合使用 INT64 `chunk_id` 主键，以及 `document_id`、`content`、`title`、`parent_title`、`item_name`、`metadata`、`dense_vector`、`sparse_vector`。主体集合保存首个切片主键、文档标识、主体名称和两类向量。稠密索引使用 COSINE，稀疏索引使用 IP。
 
-离线测试使用真实 LangGraph 执行 Markdown 和 PDF 两条路径，替换 PDF 解析引擎、模型请求及存储边界，不请求真实服务：
+已有集合不兼容时停止，不删除历史数据。同一向量状态可重试 upsert；重新执行整个导入会创建新文档，不自动去重。跨集合写入没有事务，失败时可能已部分写入。
+
+MinIO 不自动公开桶，Markdown 保存持久的 `s3://bucket/object` 引用。展示时由调用方生成授权链接。图片节点支持普通内联图片和 `<含空格路径>`，不解析 HTML 图片、引用式图片或远程图片内容。当前仅实现普通文档切分。
+
+## 自动化测试与真实验收
+
+不请求外部服务的自动化测试：
 
 ```powershell
-.venv/Scripts/python.exe -m unittest discover -s tests -p test_import_workflow.py -v
+.venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-测试覆盖路由、重复图片、原文保护、标题与代码块、切片长度、向量维度错误、无效主体响应、PDF 转换失败、存储失败、任务状态清理及真实 Milvus SDK schema 构建。已确认本机 MinerU 和 BGE 适配器可导入。
+共 26 项测试，覆盖真实图编排、PDF 云 API 调用协议、失败与超时、凭据隔离、归档路径校验、图片处理、切片、向量校验及 Milvus schema。
 
-实现时修正了静态路由多余的 `self` 参数、重构后的包导出、LLM 地址变量名不一致，以及 MinerU 默认禁用内置模型导致退出的问题。MinerU 旧版本依赖会产生 `fitz` 弃用警告。
-
-最初实现阶段仅做离线验证；本次真实文件验收结果见下节。扫描 PDF 的 MinerU OCR 和成功的 LLM/视觉生成仍未验证。
-
-
-## 真实资源验收（2026-11-13）
-
-选用 `resource/doc/H3C LA2608室内无线网关 用户手册-6W100-整本手册.pdf`，175092 字节，共 6 页。
-
-首次执行停在 MinerU：`Required dependency not installed`，随后退出码为 1。增加文字型 PDF 的 PyMuPDF 解析路径后，已真实提取各页文字及图片，并保留 OCR 分支。
-
-现有 BGE 模型位于本机缓存的 `models/models/BAAI--bge-m3/snapshots/master`，与 `.env` 中路径不一致。通过验收脚本 `--bge-model-path` 指定现有目录，无需下载。已加载真实模型并生成一条 1024 维稠密向量和含 14 个非零特征的稀疏向量。
-
-Docker 容器启动后，Milvus 与 MinIO 已连接成功。已将 PDF 第一张真实图片上传 MinIO，回读对象大小为 1343 字节，与本地一致。
-
-启用视觉模型时曾返回 `401 Incorrect API key`。用户确认未配置模型 API 后，增加显式 `--no-llm` 模式并继续验收，无需提供 API 密钥。此模式图片照常上传但不生成描述，主体采用文件名；它不表示完成了语义主体识别。BGE 本地向量化继续执行。
-
-最终真实验收通过：
-
-- 文档标识：`b5ce6eb73e2f4466badcd7dfcd467ed1`。
-- MinIO 桶 `knowledge-base`：该文档前缀下 23 个真实图片对象。
-- Milvus `kb_chunks`：8 条切片，`kb_item_names`：1 条主体记录。
-- 稠密向量维度：1024，同时保存稀疏向量。
-- 按文档 ID 强一致性回读确认记录数量，按主键回读确认切片文本和向量维度。
-- 输出与回读结果：`temp-files/b5ce6eb73e2f4466badcd7dfcd467ed1/acceptance.json`。
-
-本地 `.env` 已修正 `BGE_M3_PATH` 为实际缓存目录，并设置 `IMPORT_USE_LLM=false`；未修改 API 密钥。流程没有使用模拟向量或模拟数据库。
-
-验收脚本：
+完整真实验收会调用 API 并写存储：
 
 ```powershell
-.venv/Scripts/python.exe -m app.tool.verify_import --no-llm
+.venv/Scripts/python.exe -m app.tool.verify_import
 ```
 
-脚本逐节点保存 `temp-files/<document_id>/state.json`。修复配置后可用 `--resume <state.json>` 继续，避免重新创建文档标识。全部节点完成后按文档 ID 回读 Milvus 切片数量、主体记录、向量维度与文本，并检查 MinIO 对象；成功时输出 `acceptance.json`。状态文件含文档与向量，应保留在已忽略的运行目录。
+默认选择 `resource/` 中最小的 PDF，可用 `--file`、`--output-dir` 指定输入及输出。逐节点保存 `state.json`，失败修复后可用 `--resume <state.json>` 继续。成功后回读 Milvus 计数、切片文本、向量维度，并核对全部 MinIO 图片引用，输出 `acceptance.json`。
 
+## 验证历史与处理记录
 
-日常导入也支持 `--no-llm`，或在 `.env` 中设置 `IMPORT_USE_LLM=false`：
+- 早期本地解析曾报 `Required dependency not installed`，旧方案临时增加文字层提取；这些本地解析实现现已移除。
+- 初次模型调用出现 `401 Incorrect API key`，后续配置有效密钥和最新 base URL 后调用通过。视觉模型曾返回 `404 Model not exist`，调整为服务支持的 `qwen3-vl-plus` 后通过。
+- 修正过 BGE 本地目录层级、BGE 与云嵌入维度混用、路由静态方法签名及配置重构中的导出缺失问题。
+- 2026-11-13 的旧方案验收：6 页 H3C LA2608 手册，8 条切片、1 条主体记录、23 个图片对象；属于历史结果，不代表当前云解析输出。
+- 2026-11-14 的旧方案 LLM 验收：23 张图片生成描述后形成 13 个切片，主体识别为 `H3C LA2608 室内无线网关`，入库回读通过。历史文档标识为 `19122f4ce64d42c3b0901d76a06fb212`。
+- 2026-11-14 的 MinerU 云 API 验收：同一份 6 页 PDF 经上传、排队、运行、下载完成，得到 3818 字符正文和 4 张图片，全部本地图片引用存在。产物位于 `temp-files/mineru-online-dfb382c9c92846fca6e858985634766c/`。
 
-```powershell
-.venv/Scripts/python.exe -m app.processor.import_process.agent.kb_import_workflow "path/to/manual.pdf" --no-llm --stream
-```
+运行产物含原文和向量，保存在已忽略的 `temp-files/`，不纳入 Git。真实转换测试与全链路存储验收应分别记录，不将协议模拟测试视为云服务或模型质量验证。
 
-本次新增文字型 PDF 真实解析测试、无 LLM 完整流程测试。离线测试共 15 项通过；它们与上述真实服务验收分别记录。
+当前云 API 唯一路径已重新实测通过：未传任何解析模式参数，得到 3818 字符正文及 4 个有效本地图片引用。验证结果位于 `temp-files/mineru-cloud-24f23fbf3e4d476daa712df5fe49751a/conversion_verification.json`。本次仅重新验收 PDF 转换，没有重复执行 LLM、BGE 或数据库写入。

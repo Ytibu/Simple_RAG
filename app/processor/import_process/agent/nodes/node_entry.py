@@ -6,7 +6,7 @@ from app.processor.import_process.exceptions import FileProcessingError
 
 
 class NodeEntry(NodeBase):
-    """校验输入并创建每次导入独立的输出目录。"""
+    """校验输入，并使用调用方在状态中指定的输出目录。"""
     name = "node_entry"
 
     def process(self, state):
@@ -16,9 +16,12 @@ class NodeEntry(NodeBase):
         path = Path(raw_path).expanduser().resolve()
         if not path.is_file() or path.suffix.lower() not in {".pdf", ".md", ".markdown"}:
             raise FileProcessingError("输入必须是存在的 PDF 或 Markdown 文件", node_name=self.name)
+        raw_directory = state.get("local_dir", "")
+        if not raw_directory:
+            raise FileProcessingError("请提供 local_dir 输出目录", node_name=self.name)
+        directory = Path(raw_directory).expanduser().resolve()
+        directory.mkdir(parents=True, exist_ok=True)
         document_id = uuid4().hex
-        directory = Path(self.config.output_root).resolve() / document_id
-        directory.mkdir(parents=True, exist_ok=False)
         is_pdf = path.suffix.lower() == ".pdf"
         state.update(document_id=document_id, task_id=state.get("task_id") or document_id,
                      local_file_path=str(path), local_dir=str(directory), file_title=path.stem,

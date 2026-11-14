@@ -1,69 +1,24 @@
-from pathlib import Path
-
+from app.clients.mineru_utils import convert_pdf
+from app.conf.mineru_config import MineruConfig
 from app.processor.import_process.agent.node_base import NodeBase
 from app.processor.import_process.exceptions import PdfConversionError
 
 
-def convert_mineru_pdf(pdf_path, output_dir):
-    """使用当前 magic-pdf 0.6 的本地解析接口，模型按 MinerU 自身配置加载。"""
-    from magic_pdf.pipe.UNIPipe import UNIPipe
-    from magic_pdf.rw.DiskReaderWriter import DiskReaderWriter
-    from magic_pdf.libs.MakeContentConfig import DropMode
-    import magic_pdf.model as model_config
-    # magic-pdf 0.6 默认禁用内置模型；本地解析必须显式开启。
-    model_config.__use_inside_model__ = True
-    images = Path(output_dir) / "images"
-    images.mkdir(parents=True, exist_ok=True)
-    pipe = UNIPipe(Path(pdf_path).read_bytes(), {"_pdf_type": "", "model_list": []},
-                   DiskReaderWriter(str(images)))
-    pipe.pipe_classify()
-    pipe.pipe_analyze()
-    pipe.pipe_parse()
-    return pipe.pipe_mk_markdown("images", drop_mode=DropMode.NONE)
-
-
-def convert_pdf(pdf_path, output_dir):
-    """文字型 PDF 直接提取；扫描页交给 MinerU OCR，不静默丢弃页面。"""
-    import pymupdf
-    try:
-        document = pymupdf.open(pdf_path)
-    except pymupdf.FileDataError:
-        # 让 MinerU 提供最终的格式错误，也兼容已有转换适配器。
-        return convert_mineru_pdf(pdf_path, output_dir)
-    with document:
-        if not document.page_count or any(len(page.get_text().strip()) < 20 for page in document):
-            return convert_mineru_pdf(pdf_path, output_dir)
-        images = Path(output_dir) / "images"
-        images.mkdir(parents=True, exist_ok=True)
-        sections = [f"# {Path(pdf_path).stem}"]
-        for page_number, page in enumerate(document, 1):
-            sections.append(f"## 第 {page_number} 页")
-            for block_number, block in enumerate(page.get_text("dict", sort=True)["blocks"]):
-                if block["type"] == 0:
-                    text = "\n".join("".join(span["text"] for span in line["spans"])
-                                     for line in block["lines"])
-                    if text.strip():
-                        sections.append(text.strip())
-                elif block["type"] == 1:
-                    name = f"page_{page_number}_{block_number}.{block['ext']}"
-                    (images / name).write_bytes(block["image"])
-                    sections.append(f"![第{page_number}页插图](images/{name})")
-        return "\n\n".join(sections)
-
-
 class NodePdfToMd(NodeBase):
-    """将 PDF 转为 Markdown，同时保留解析产生的本地图片。"""
+    """将 PDF 统一交给 MinerU 云 API，读取并保留结果中的图片相对路径。"""
+
     name = "node_pdf_to_md"
 
     def process(self, state):
         try:
-            content = convert_pdf(state["pdf_path"], state["local_dir"])
-            if not content or not content.strip():
-                raise ValueError("PDF 未解析出有效内容")
-            target = Path(state["local_dir"]) / "document.md"
-            target.write_text(content, encoding="utf-8")
+            config = MineruConfig(base_url=self.config.mineru_base_url,
+                                  api_token=self.config.mineru_api_token)
+            target = convert_pdf(state["pdf_path"], state["local_dir"], config)
+            content = target.read_text(encoding="utf-8-sig")
+            if not content.strip():
+                raise ValueError("MinerU 云端未返回有效的 Markdown 内容")
             state.update(md_path=str(target), md_content=content)
             return state
-        except (Exception, SystemExit) as exc:
-            raise PdfConversionError("PDF 转换失败，请检查 MinerU 模型及运行依赖",
+        except Exception as exc:
+            raise PdfConversionError("MinerU 云端 PDF 解析失败",
                                      node_name=self.name, cause=exc) from exc

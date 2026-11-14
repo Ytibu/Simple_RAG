@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from app.processor.import_process import ImportConfig, create_default_state
 from app.processor.import_process.agent.kb_import_workflow import KBImportWorkflow
@@ -37,8 +38,31 @@ class ImportTests(unittest.TestCase):
         path.write_text(content, encoding='utf-8')
         return path
 
+    def initial_state(self, **overrides):
+        overrides.setdefault('local_dir', str(self.root / 'runs' / uuid4().hex))
+        return create_default_state(**overrides)
+
+    def test_entry_uses_exact_state_directory(self):
+        directory = self.root / 'specified' / 'output'
+        directory.mkdir(parents=True)
+        marker = directory / 'keep.txt'
+        marker.write_text('existing', encoding='utf-8')
+        state = create_default_state(local_file_path=str(self.source()), local_dir=str(directory))
+        result = NodeEntry(self.config)(state)
+        self.assertEqual(Path(result['local_dir']), directory.resolve())
+        self.assertEqual(Path(result['split_path']), directory.resolve() / 'chunks.json')
+        self.assertEqual(Path(result['embeddings_path']), directory.resolve() / 'embeddings.json')
+        self.assertEqual(marker.read_text(encoding='utf-8'), 'existing')
+        self.assertFalse((self.root / 'output').exists())
+
+    def test_entry_requires_state_directory(self):
+        state = create_default_state(local_file_path=str(self.source()))
+        with self.assertRaisesRegex(FileProcessingError, 'local_dir'):
+            NodeEntry(self.config)(state)
+        self.assertFalse((self.root / 'output').exists())
+
     def entry(self, path):
-        return NodeEntry(self.config)(create_default_state(local_file_path=str(path)))
+        return NodeEntry(self.config)(self.initial_state(local_file_path=str(path)))
 
     def test_markdown_complete_workflow(self):
         client = MagicMock()
@@ -46,7 +70,7 @@ class ImportTests(unittest.TestCase):
         with patch(NODES + 'node_item_name_recognition.recognize_item', return_value='{"item_name":"万用表"}'), \
              patch(NODES + 'node_bge_embedding.encode_texts', side_effect=fake_encode) as encode, \
              patch(NODES + 'node_import_milvus.get_client', return_value=client):
-            result = KBImportWorkflow(self.config).run(create_default_state(local_file_path=str(self.source())))
+            result = KBImportWorkflow(self.config).run(self.initial_state(local_file_path=str(self.source())))
         self.assertGreater(result['imported_count'], 1)
         self.assertEqual(result['imported_count'], len(result['chunks']))
         self.assertEqual(result['item_name'], '万用表')
@@ -70,7 +94,7 @@ class ImportTests(unittest.TestCase):
              patch(NODES + 'node_item_name_recognition.recognize_item') as recognize, \
              patch(NODES + 'node_bge_embedding.encode_texts', side_effect=fake_encode), \
              patch(NODES + 'node_import_milvus.get_client', return_value=client):
-            result = KBImportWorkflow(self.config).run(create_default_state(local_file_path=str(source)))
+            result = KBImportWorkflow(self.config).run(self.initial_state(local_file_path=str(source)))
         describe.assert_not_called()
         recognize.assert_not_called()
         upload.assert_called_once()
@@ -82,11 +106,13 @@ class ImportTests(unittest.TestCase):
         source = self.source('fake pdf bytes', '.PDF')
         client = MagicMock()
         client.has_collection.return_value = False
-        with patch(NODES + 'node_pdf_to_md.convert_pdf', return_value='# 设备\n\n说明。') as convert, \
+        markdown = self.root / 'cloud.md'
+        markdown.write_text('# 设备\n\n说明。', encoding='utf-8')
+        with patch(NODES + 'node_pdf_to_md.convert_pdf', return_value=markdown) as convert, \
              patch(NODES + 'node_item_name_recognition.recognize_item', return_value='{"item_name":"设备"}'), \
              patch(NODES + 'node_bge_embedding.encode_texts', side_effect=fake_encode), \
              patch(NODES + 'node_import_milvus.get_client', return_value=client):
-            updates = list(KBImportWorkflow(self.config).run(create_default_state(local_file_path=str(source)), stream=True))
+            updates = list(KBImportWorkflow(self.config).run(self.initial_state(local_file_path=str(source)), stream=True))
         self.assertEqual(len(updates), 7)
         convert.assert_called_once()
         self.assertEqual(updates[-1]['node_import_milvus']['imported_count'], 1)
@@ -174,43 +200,15 @@ class ImportTests(unittest.TestCase):
         with patch(NODES + 'node_item_name_recognition.recognize_item', return_value='not json'), \
              patch(NODES + 'node_bge_embedding.encode_texts') as encode:
             with self.assertRaises(LLMError):
-                KBImportWorkflow(self.config).run(create_default_state(local_file_path=str(self.source())))
+                KBImportWorkflow(self.config).run(self.initial_state(local_file_path=str(self.source())))
         encode.assert_not_called()
-
-    def test_text_pdf_real_extraction(self):
-        import pymupdf
-        from app.processor.import_process.agent.nodes.node_pdf_to_md import convert_pdf
-        path = self.root / 'real.pdf'
-        with pymupdf.open() as document:
-            page = document.new_page()
-            page.insert_text((72, 72), 'H3C wireless gateway installation and connection instructions.')
-            document.save(path)
-        with patch(NODES + 'node_pdf_to_md.convert_mineru_pdf') as ocr:
-            result = convert_pdf(str(path), str(self.root / 'parsed'))
-        self.assertIn('H3C wireless gateway', result)
-        self.assertIn('第 1 页', result)
-        ocr.assert_not_called()
-
-    def test_pdf_adapter_enables_local_model(self):
-        from app.processor.import_process.agent.nodes.node_pdf_to_md import convert_pdf
-        import magic_pdf.model as model_config
-        source = self.source('fake pdf', '.pdf')
-        with patch('magic_pdf.pipe.UNIPipe.UNIPipe') as pipe:
-            pipe.return_value.pipe_mk_markdown.return_value = '# 文档'
-            with patch.object(model_config, '__use_inside_model__', False):
-                content = convert_pdf(str(source), str(self.root / 'pdf'))
-                self.assertTrue(model_config.__use_inside_model__)
-        self.assertEqual(content, '# 文档')
-        pipe.return_value.pipe_classify.assert_called_once()
-        pipe.return_value.pipe_analyze.assert_called_once()
-        pipe.return_value.pipe_parse.assert_called_once()
 
     def test_bad_pdf_stops_before_following_nodes(self):
         from app.processor.import_process.exceptions import PdfConversionError
         with patch(NODES + 'node_pdf_to_md.convert_pdf', side_effect=ValueError('bad PDF')), \
              patch(NODES + 'node_md_img.describe_image') as describe:
             with self.assertRaises(PdfConversionError):
-                KBImportWorkflow(self.config).run(create_default_state(local_file_path=str(self.source('bad', '.pdf'))))
+                KBImportWorkflow(self.config).run(self.initial_state(local_file_path=str(self.source('bad', '.pdf'))))
         describe.assert_not_called()
 
     def test_incompatible_schema_rejected(self):

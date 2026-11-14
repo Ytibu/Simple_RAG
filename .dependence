@@ -26,5 +26,4 @@ uv add langchain-text-splitters # LangChain的文本分割模块，用于切分�
 uv add pandas
 uv add modelscope
 uv add FlagEmbedding
-uv add magic-pdf
 uv add regex
