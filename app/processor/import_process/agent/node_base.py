@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 from app.core.logger import logger
-from app.processor.import_process.state import ImportGraphState
+from app.processor.import_process.agent.state import ImportGraphState
 from app.utils.task_utils import add_running_task, add_done_task
 from app.conf.config import get_config
 

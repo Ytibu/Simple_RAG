@@ -13,7 +13,7 @@ from app.processor.import_process.agent.nodes.node_import_milvus import NodeImpo
 from app.processor.import_process.agent.nodes.node_item_name_recognition import NodeItemNameRecognition
 from app.processor.import_process.agent.nodes.node_md_img import NodeMdImg
 from app.processor.import_process.agent.nodes.node_pdf_to_md import NodePdfToMd
-from app.processor.import_process.state import ImportGraphState, create_default_state
+from app.processor.import_process.agent.state import ImportGraphState, create_default_state
 
 # 初始化环境变量（类加载前执行，保证全局生效）
 
