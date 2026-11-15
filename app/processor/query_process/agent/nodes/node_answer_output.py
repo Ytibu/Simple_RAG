@@ -1,24 +1,35 @@
-from app.core.logger import logger
+import re
 from app.processor.query_process.agent.node_base import NodeBase
-from app.processor.query_process.agent.state import QueryGraphState
+from app.processor.query_process.retrieval import ask_model
 
 
 class NodeAnswerOutput(NodeBase):
-    """
-    节点功能: 答案生成
-    """
+    name = "node_answer_output"
 
-    # 覆盖基类的 name 属性，标识节点名称
-    name: str = "node_answer_output"
-
-    def process(self, state: QueryGraphState) -> QueryGraphState:
-        """
-        节点逻辑
-        :param state: 工作流状态对象
-        :return: 更新后的状态对象
-        """
-
-        # TODO
-        logger.info(f"【{self.name}】节点逻辑")
-
-        return state
+    def process(self, state):
+        if state.get("answer"):
+            return {"answer": state["answer"], "sources": []}
+        sources, context = [], []
+        remaining = self.config.context_chars
+        for doc in state.get("reranked_docs", []):
+            content = doc["content"][:remaining]
+            if not content.strip():
+                continue
+            number = len(sources) + 1
+            source = {key: doc.get(key) for key in
+                      ("chunk_id", "document_id", "item_name", "title", "parent_title", "metadata", "rerank_score")}
+            source.update(citation=number, content=content)
+            sources.append(source)
+            context.append(f"[{number}] {doc.get('title', '')}\n{content}")
+            remaining -= len(content)
+            if remaining <= 0:
+                break
+        if not sources:
+            return {"answer": "知识库中没有找到相关内容，请补充问题或导入对应文档。", "sources": []}
+        prompt = ("仅依据以下检索资料，用中文回答问题，在事实后用[1]等编号引用来源。"
+                  "资料不足时明确说明，不使用假设答案补全事实；不得引用未提供的编号。\n问题："
+                  + state["rewritten_query"] + "\n检索资料：\n" + "\n\n".join(context))
+        answer = ask_model(self.config, prompt)
+        if any(not 1 <= int(n) <= len(sources) for n in re.findall(r"\[(\d+)\]", answer)):
+            raise ValueError("回答包含未提供的来源编号")
+        return {"answer": answer, "sources": sources, "prompt": prompt}

@@ -1,0 +1,5 @@
+/* 沿用导入页配色、卡片与按钮。 */
+textarea { box-sizing: border-box; width: 100%; padding: 0.5rem; font: inherit; }
+#answer, .source-content, .history-answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+#sources summary { cursor: pointer; }
+nav a { color: #17498c; }

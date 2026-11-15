@@ -1,24 +1,20 @@
-from app.core.logger import logger
 from app.processor.query_process.agent.node_base import NodeBase
-from app.processor.query_process.agent.state import QueryGraphState
+
 
 class NodeRrf(NodeBase):
-    """
-    节点功能：Reciprocal Rank Fusion
-    将多路召回的结果（向量、HyDE、Web）进行加权融合排序。
-    """
+    """按主键去重并累加各召回分支的倒数排名。"""
+    name = "node_rrf"
 
-    # 覆盖基类的 name 属性，标识节点名称
-    name: str = "node_rrf"
-
-    def process(self, state: QueryGraphState) -> QueryGraphState:
-        """
-        节点逻辑
-        :param state: 工作流状态对象
-        :return: 更新后的状态对象
-        """
-
-        # TODO
-        logger.info(f"【{self.name}】节点逻辑")
-
-        return state
+    def process(self, state):
+        merged = {}
+        for field in ("embedding_chunks", "hyde_embedding_chunks", "web_search_docs"):
+            seen = set()
+            for rank, doc in enumerate(state.get(field, []), 1):
+                key = (doc.get("document_id", ""), str(doc["chunk_id"]))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if key not in merged:
+                    merged[key] = {**doc, "rrf_score": 0.0}
+                merged[key]["rrf_score"] += 1 / (self.config.rrf_k + rank)
+        return {"rrf_chunks": sorted(merged.values(), key=lambda d: d["rrf_score"], reverse=True)[:self.config.recall_k]}

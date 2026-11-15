@@ -6,7 +6,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from app.processor.import_process import ImportConfig, create_default_state
+from app.conf.config import ImportConfig
+from app.processor.import_process import create_default_state
 from app.processor.import_process.agent.kb_import_workflow import KBImportWorkflow
 from app.processor.import_process.agent.nodes.node_entry import NodeEntry
 from app.processor.import_process.agent.nodes.node_document_split import NodeDocumentSplit

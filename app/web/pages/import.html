@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>导入知识库</title>
+    <link rel="stylesheet" href="/static/import.css">
+    <script src="/static/import.js" defer></script>
+</head>
+<body>
+    <main>
+        <nav><a href="/import" aria-current="page">导入文件</a> · <a href="/query">查询知识库</a></nav>
+        <h1>导入知识库</h1>
+        <form id="import-form">
+            <label for="files">选择 PDF 或 Markdown 文件</label>
+            <input id="files" name="files" type="file" accept=".pdf,.md,.markdown" multiple required>
+            <button type="submit">开始导入</button>
+        </form>
+        <p id="feedback" role="status"></p>
+        <ul id="tasks" aria-label="导入任务"></ul>
+    </main>
+</body>
+</html>
