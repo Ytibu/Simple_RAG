@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>查询知识库</title>
+    <link rel="stylesheet" href="/static/import.css">
+    <link rel="stylesheet" href="/static/query.css">
+    <script src="/static/query.js" defer></script>
+</head>
+<body>
+    <main>
+        <nav><a href="/import">导入文件</a> · <a href="/query" aria-current="page">查询知识库</a></nav>
+        <h1>查询知识库</h1>
+        <p>根据已导入的手册回答，附原文切片供核对。同一会话支持连续提问。</p>
+        <form id="query-form">
+            <label for="question">问题</label>
+            <textarea id="question" rows="4" maxlength="4000" required placeholder="例如：H3C LA2608 支持哪些厂商的无线控制器？"></textarea>
+            <label><input id="hyde" type="checkbox" checked> 使用 HyDE 增强检索</label>
+            <button id="submit" type="submit">查询</button>
+            <button id="new-session" type="button">开始新会话</button>
+        </form>
+        <p id="feedback" role="status" aria-live="polite"></p>
+        <section id="result" hidden aria-label="查询结果">
+            <h2>回答</h2>
+            <p id="answer"></p>
+            <h2>引用原文</h2>
+            <ul id="sources"></ul>
+        </section>
+        <section aria-label="会话记录"><h2>本次会话</h2><ul id="history"></ul></section>
+    </main>
+</body>
+</html>
