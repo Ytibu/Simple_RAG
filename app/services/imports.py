@@ -72,6 +72,7 @@ def run_import(task_id: str, path: Path) -> None:
             task_id=task_id,
             local_file_path=str(path),
             local_dir=str(path.parent.parent),
+            restrict_image_paths=True,
         )
         result = KBImportWorkflow.create_and_run(state)
         set_task_result(task_id, "imported_count", str(result["imported_count"]))
@@ -85,9 +86,7 @@ def get_progress(task_id: str) -> dict | None:
     status = get_task_status(task_id)
     if not status:
         return None
-    count = get_task_result(task_id, "imported_count")
-    if status == "completed" and not count:
-        status = "processing"
+    count = get_task_result(task_id, "imported_count") if status == "completed" else None
     return {
         "status": status,
         "done_list": get_done_task_list(task_id),

@@ -3,21 +3,53 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>导入知识库</title>
-    <link rel="stylesheet" href="/static/import.css">
-    <script src="/static/import.js" defer></script>
+    <title>资料导入 · 知识库</title>
+    <link rel="stylesheet" href="/static/workspace.css">
+    <link rel="stylesheet" href="/static/import.css?v=4">
+    <script src="/static/import.js?v=3" defer></script>
 </head>
-<body>
-    <main>
-        <nav><a href="/import" aria-current="page">导入文件</a> · <a href="/query">查询知识库</a></nav>
-        <h1>导入知识库</h1>
-        <form id="import-form">
-            <label for="files">选择 PDF 或 Markdown 文件</label>
-            <input id="files" name="files" type="file" accept=".pdf,.md,.markdown" multiple required>
-            <button type="submit">开始导入</button>
-        </form>
-        <p id="feedback" role="status"></p>
-        <ul id="tasks" aria-label="导入任务"></ul>
+<body class="workspace import-page">
+    <aside class="workspace-sidebar">
+        <a class="workspace-brand" href="/">
+            <span class="brand-mark" aria-hidden="true">✦</span>
+            <span>知识库<small>智能咨询系统</small></span>
+        </a>
+        <nav aria-label="工作台导航">
+            <a href="/query">智能咨询</a>
+            <a href="/import" aria-current="page">资料导入</a>
+        </nav>
+    </aside>
+    <main class="workspace-main">
+        <header class="workspace-header">
+            <span>资料工作台</span>
+            <a class="secondary-button" href="/query">前往咨询 ↗</a>
+        </header>
+        <div class="workspace-content">
+            <h1>资料导入</h1>
+            <p class="intro">上传资料，处理完成后即可在智能咨询中提问。</p>
+
+            <div class="import-layout">
+                <section class="import-panel" aria-labelledby="upload-heading">
+                    <h2 id="upload-heading">上传文件</h2>
+                    <form id="import-form">
+                        <div id="drop-zone" class="file-picker">
+                            <label for="files">选择文件</label>
+                            <p id="file-help">拖拽文件到这里，或选择 PDF、Markdown，支持多文件。</p>
+                            <input id="files" name="files" type="file" accept=".pdf,.md,.markdown" aria-describedby="file-help" multiple required>
+                        </div>
+                        <button class="primary-button" type="submit">开始导入</button>
+                        <progress id="upload-progress" max="100" value="0" aria-label="文件上传进度" hidden></progress>
+                    </form>
+                    <p id="feedback" role="status"></p>
+                </section>
+
+                <section class="import-panel" aria-labelledby="tasks-heading">
+                    <h2 id="tasks-heading">导入进度</h2>
+                    <ul id="tasks" aria-labelledby="tasks-heading"></ul>
+                    <p class="empty-tasks">暂无导入任务。提交文件后，可在这里查看进度。</p>
+                </section>
+            </div>
+        </div>
     </main>
 </body>
 </html>

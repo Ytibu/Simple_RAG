@@ -2,32 +2,67 @@
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>查询知识库</title>
-    <link rel="stylesheet" href="/static/import.css">
-    <link rel="stylesheet" href="/static/query.css">
-    <script src="/static/query.js" defer></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+    <title>智能咨询 · 知识库</title>
+    <link rel="stylesheet" href="/static/workspace.css">
+    <link rel="stylesheet" href="/static/query.css?v=5">
+    <script src="/static/query.js?v=4" defer></script>
 </head>
-<body>
-    <main>
-        <nav><a href="/import">导入文件</a> · <a href="/query" aria-current="page">查询知识库</a></nav>
-        <h1>查询知识库</h1>
-        <p>根据已导入的手册回答，附原文切片供核对。同一会话支持连续提问。</p>
-        <form id="query-form">
-            <label for="question">问题</label>
-            <textarea id="question" rows="4" maxlength="4000" required placeholder="例如：H3C LA2608 支持哪些厂商的无线控制器？"></textarea>
-            <label><input id="hyde" type="checkbox" checked> 使用 HyDE 增强检索</label>
-            <button id="submit" type="submit">查询</button>
-            <button id="new-session" type="button">开始新会话</button>
-        </form>
-        <p id="feedback" role="status" aria-live="polite"></p>
-        <section id="result" hidden aria-label="查询结果">
-            <h2>回答</h2>
-            <p id="answer"></p>
-            <h2>引用原文</h2>
-            <ul id="sources"></ul>
-        </section>
-        <section aria-label="会话记录"><h2>本次会话</h2><ul id="history"></ul></section>
+<body class="workspace query-page">
+    <aside class="workspace-sidebar">
+        <a class="workspace-brand" href="/">
+            <span class="brand-mark" aria-hidden="true">✦</span>
+            <span>知识库<small>智能咨询系统</small></span>
+        </a>
+        <nav aria-label="工作台导航">
+            <a href="/query" aria-current="page">智能咨询</a>
+            <a href="/import">资料导入</a>
+        </nav>
+    </aside>
+    <main class="workspace-main">
+        <header class="workspace-header">
+            <span id="connection-status" role="status">正在连接服务…</span>
+            <button id="clear-history" class="secondary-button" type="button">清空历史</button>
+            <button id="new-session" class="secondary-button" type="button">＋ 新建会话</button>
+        </header>
+        <div id="chat-scroll" class="chat-scroll" role="region" aria-label="对话消息" tabindex="0">
+            <div class="chat-column chat-messages">
+                <section id="welcome" aria-labelledby="welcome-heading">
+                    <div class="consult-hero">
+                        <h1 id="welcome-heading">知识库智能咨询</h1>
+                        <p>根据已导入的资料回答问题，附上原文出处，方便核对和追问。</p>
+                    </div>
+                    <div class="prompt-options" aria-label="提问示例">
+                        <button type="button" data-question="H3C LA2608 支持哪些厂商的无线控制器？">
+                            <strong>查询兼容性</strong><span>设备支持哪些无线控制器？</span>
+                        </button>
+                        <button type="button" data-question="请根据手册说明 H3C LA2608 的初始配置步骤。">
+                            <strong>查找配置步骤</strong><span>设备初次使用时如何配置？</span>
+                        </button>
+                        <button type="button" data-question="如果 H3C LA2608 无法连接无线控制器，手册建议检查哪些项目？">
+                            <strong>排查故障</strong><span>无法连接控制器时如何排查？</span>
+                        </button>
+                    </div>
+                </section>
+                <ol id="history" class="conversation" aria-label="本次会话" aria-live="polite"></ol>
+            </div>
+        </div>
+        <div class="chat-footer">
+            <div class="chat-column">
+                <form id="query-form" class="composer">
+                    <textarea id="question" rows="2" maxlength="4000" required aria-label="向知识库提问" placeholder="输入设备型号、配置需求或遇到的问题…"></textarea>
+                    <div class="composer-actions">
+                        <label class="retrieval-option" title="生成假设性文档辅助匹配相关资料">
+                            <input id="hyde" type="checkbox" checked> 增强检索
+                        </label>
+                        <label class="retrieval-option"><input id="web-search" type="checkbox"> 联网搜索</label>
+                        <label class="retrieval-option"><input id="stream-answer" type="checkbox" checked> 流式输出</label>
+                        <button id="submit" class="primary-button" type="submit">发送 <span aria-hidden="true">↑</span></button>
+                    </div>
+                </form>
+                <p id="feedback" role="status"></p>
+            </div>
+        </div>
     </main>
 </body>
 </html>

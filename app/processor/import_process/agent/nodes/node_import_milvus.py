@@ -34,6 +34,8 @@ class NodeImportMilvus(NodeBase):
             client.upsert(collection_name=config.item_name_collection, data=[{
                 "chunk_id": records[0]["chunk_id"], "document_id": state["document_id"],
                 "item_name": state["item_name"], **state["item_embedding"]}])
+            client.load_collection(collection_name=config.chunks_collection)
+            client.load_collection(collection_name=config.item_name_collection)
             state["imported_count"] = len(records)
             return state
         except Exception as exc:

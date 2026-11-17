@@ -6,7 +6,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+from fastapi.testclient import TestClient
+
 from app.conf.config import ImportConfig
+from app.main import app
 from app.processor.import_process import create_default_state
 from app.processor.import_process.agent.kb_import_workflow import KBImportWorkflow
 from app.processor.import_process.agent.nodes.node_entry import NodeEntry
@@ -81,7 +84,14 @@ class ImportTests(unittest.TestCase):
         self.assertTrue(all(len(c['content']) <= 50 for c in result['chunks']))
         self.assertTrue(all(0 <= c['chunk_id'] < 2**63 for c in result['chunks']))
         self.assertGreater(encode.call_count, 1)
+        encoded_texts = [text for call in encode.call_args_list for text in call.args[0]]
+        self.assertEqual(encoded_texts[:-1], ['万用表\n' + c['content'] for c in result['chunks']])
+        self.assertEqual(encoded_texts[-1], '万用表')
+        self.assertTrue(all(c['item_name'] == '万用表' and 'dense_vector' in c for c in result['chunks']))
+        saved_chunks = json.loads(Path(result['split_path']).read_text(encoding='utf-8'))
+        self.assertTrue(all(c['item_name'] == '万用表' for c in saved_chunks))
         self.assertEqual(client.create_collection.call_count, 2)
+        self.assertEqual(client.load_collection.call_count, 2)
         client.close.assert_called_once()
 
     def test_no_llm_import_uploads_images_without_api_calls(self):
@@ -102,6 +112,42 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(result['item_name'], source.stem)
         self.assertGreater(result['imported_count'], 0)
         self.assertNotIn('图片说明：', result['md_content'])
+
+    def test_upload_page_runs_import_and_reports_progress(self):
+        self.config.use_llm = False
+        milvus = MagicMock()
+        milvus.has_collection.return_value = False
+        with TestClient(app) as client, \
+             patch('app.services.imports.get_config', return_value=self.config), \
+             patch('app.processor.import_process.agent.node_base.get_config', return_value=self.config), \
+             patch.dict('os.environ', {'MINIO_IMPORT_ARCHIVE_BUCKET': ''}), \
+             patch(NODES + 'node_bge_embedding.encode_texts', side_effect=fake_encode), \
+             patch(NODES + 'node_import_milvus.get_client', return_value=milvus), \
+             patch(NODES + 'node_md_img.upload_image') as upload_image:
+            self.assertEqual(client.get('/import').status_code, 200)
+            self.assertEqual(client.get('/static/import.js').status_code, 200)
+            self.assertEqual(client.get('/api/imports/missing').status_code, 404)
+            invalid = client.post('/api/imports', files={'files': ('bad.txt', b'text')})
+            self.assertEqual(invalid.status_code, 400)
+            (self.root / 'outside.png').write_bytes(b'image')
+            response = client.post('/api/imports', files=[
+                ('files', ('manual.md', b'# Device\n\nUsage instructions.')),
+                ('files', ('outside.md', b'![image](../../../outside.png)')),
+            ])
+            self.assertEqual(response.status_code, 202)
+            good_id, bad_id = response.json()['task_ids']
+            good = client.get(f'/api/imports/{good_id}').json()
+            bad = client.get(f'/api/imports/{bad_id}').json()
+
+        self.assertEqual(good['status'], 'completed')
+        self.assertEqual(good['imported_count'], 1)
+        self.assertIn('导入向量库', good['done_list'])
+        self.assertEqual(good['running_list'], [])
+        self.assertEqual(bad['status'], 'failed')
+        self.assertIsNone(bad['imported_count'])
+        self.assertEqual(bad['running_list'], [])
+        self.assertTrue(bad['error'])
+        upload_image.assert_not_called()
 
     def test_pdf_branch_stream(self):
         source = self.source('fake pdf bytes', '.PDF')
@@ -141,6 +187,10 @@ class ImportTests(unittest.TestCase):
         self.assertIn('https://example.com/a.png', result['md_content'])
         self.assertEqual(source.read_text(encoding='utf-8'), source_text)
         describe.assert_called_once()
+        self.assertIn('文件标题：manual', describe.call_args.args[1])
+        self.assertIn('上文：# 手册', describe.call_args.args[1])
+        self.assertIn('下文：', describe.call_args.args[1])
+        self.assertIn('![同图]', describe.call_args.args[1])
         upload.assert_called_once()
 
     def test_missing_image_fails_and_clears_running(self):
@@ -167,6 +217,37 @@ class ImportTests(unittest.TestCase):
             with self.assertRaises(EmbeddingError):
                 NodeBgeEmbedding(self.config)(state)
         self.assertEqual(state['imported_count'], 0)
+
+    def test_split_merges_short_siblings_within_length_limit(self):
+        self.config.max_content_length = 80
+        self.config.min_content_length = 40
+        content = '# 第一章\n## 甲\n短内容。\n## 乙\n另一段内容。\n# 第二章\n## 丙\n不同章节。'
+        state = self.entry(self.source(content))
+        state['md_content'] = content
+        result = NodeDocumentSplit(self.config)(state)
+        merged = next(c for c in result['chunks'] if '## 甲' in c['content'])
+        self.assertIn('## 乙', merged['content'])
+        self.assertNotIn('不同章节', merged['content'])
+        self.assertTrue(all(len(c['content']) <= 80 for c in result['chunks']))
+        self.assertTrue(all(c['parent_title'] for c in result['chunks']))
+        self.assertTrue(all(c['metadata']['file_title'] == 'manual' for c in result['chunks']))
+
+    def test_mixed_fences_do_not_expose_code_as_headings(self):
+        content = '# 正文\n````python\n~~~\n# 代码标题\n```\n## 仍在代码中\n````\n## 真实标题\n内容。'
+        state = self.entry(self.source(content))
+        state['md_content'] = content
+        self.config.min_content_length = 0
+        result = NodeDocumentSplit(self.config)(state)
+        titles = {c['title'] for c in result['chunks']}
+        self.assertEqual(titles, {'正文', '真实标题'})
+
+    def test_untitled_document_retains_all_content(self):
+        content = '没有标题的正文。' * 30
+        state = self.entry(self.source(content))
+        state['md_content'] = content
+        result = NodeDocumentSplit(self.config)(state)
+        self.assertTrue(all(c['title'] == 'manual' for c in result['chunks']))
+        self.assertTrue(all(len(c['content']) <= 50 for c in result['chunks']))
 
     def test_storage_error_does_not_report_success(self):
         state = self.entry(self.source())
@@ -196,13 +277,23 @@ class ImportTests(unittest.TestCase):
         self.assertIn('metadata', fields)
         self.assertFalse(schema.auto_id)
 
-    def test_invalid_recognition_stops_before_embedding(self):
-        from app.processor.import_process.exceptions import LLMError
-        with patch(NODES + 'node_item_name_recognition.recognize_item', return_value='not json'), \
-             patch(NODES + 'node_bge_embedding.encode_texts') as encode:
-            with self.assertRaises(LLMError):
-                KBImportWorkflow(self.config).run(self.initial_state(local_file_path=str(self.source())))
-        encode.assert_not_called()
+    def test_failed_recognition_uses_title_and_completes_import(self):
+        for result in ['not json', '{"item_name":""}', RuntimeError('unavailable')]:
+            with self.subTest(result=result):
+                client = MagicMock()
+                client.has_collection.return_value = False
+                with patch(NODES + 'node_item_name_recognition.recognize_item') as recognize, \
+                     patch(NODES + 'node_bge_embedding.encode_texts', side_effect=fake_encode), \
+                     patch(NODES + 'node_import_milvus.get_client', return_value=client):
+                    if isinstance(result, Exception):
+                        recognize.side_effect = result
+                    else:
+                        recognize.return_value = result
+                    state = KBImportWorkflow(self.config).run(
+                        self.initial_state(local_file_path=str(self.source())))
+                self.assertEqual(state['item_name'], 'manual')
+                self.assertTrue(all(c['item_name'] == 'manual' for c in state['chunks']))
+                self.assertGreater(state['imported_count'], 0)
 
     def test_bad_pdf_stops_before_following_nodes(self):
         from app.processor.import_process.exceptions import PdfConversionError

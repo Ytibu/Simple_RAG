@@ -24,6 +24,7 @@ class ImportGraphState(TypedDict):
 
     # --- 路径相关 ---
     local_dir: str        # 调用方指定的本次导入输出目录，入口节点直接使用
+    restrict_image_paths: bool  # 上传任务只读取本次导入目录中的图片
     local_file_path: str  # 原始输入文件路径
     file_title: str       # 文件标题（文件名去后缀）
     pdf_path: str         # PDF 文件路径 (如果输入是PDF)
@@ -54,6 +55,7 @@ graph_default_state: ImportGraphState = {
     "is_advanced_split_enabled": False,
     "is_vllm_enabled": False,
     "local_dir": "",
+    "restrict_image_paths": False,
     "local_file_path": "",
     "pdf_path": "",
     "md_path": "",

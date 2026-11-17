@@ -20,7 +20,8 @@ class NodeBgeEmbedding(NodeBase):
             size = self.config.embedding_batch_size
             if size <= 0 or not state.get("chunks") or not state.get("item_name"):
                 raise ValueError("批量大小、切片或主体名称无效")
-            texts = [c["content"] for c in state["chunks"]] + [state["item_name"]]
+            texts = [f"{state['item_name']}\n{c['content']}" for c in state["chunks"]]
+            texts.append(state["item_name"])
             vectors = []
             for start in range(0, len(texts), size):
                 batch = texts[start:start + size]
@@ -39,7 +40,7 @@ class NodeBgeEmbedding(NodeBase):
                        for chunk, vector in zip(state["chunks"], vectors[:-1])]
             Path(state["embeddings_path"]).write_text(
                 json.dumps(records, ensure_ascii=False), encoding="utf-8")
-            state.update(embeddings_content=records, item_embedding=vectors[-1])
+            state.update(chunks=records, embeddings_content=records, item_embedding=vectors[-1])
             return state
         except Exception as exc:
             raise EmbeddingError("BGE 向量生成失败", node_name=self.name, cause=exc) from exc

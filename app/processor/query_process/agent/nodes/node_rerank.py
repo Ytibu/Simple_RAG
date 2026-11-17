@@ -10,7 +10,11 @@ class NodeRerank(NodeBase):
     name = "node_rerank"
 
     def process(self, state):
-        docs = state.get("rrf_chunks", [])
+        merged = {}
+        for doc in state.get("rrf_chunks", []) + state.get("web_search_docs", []):
+            key = (doc.get("document_id", ""), str(doc.get("chunk_id", doc.get("url", ""))))
+            merged.setdefault(key, doc)
+        docs = list(merged.values())
         if not docs:
             return {"reranked_docs": []}
         available = bool(reranker_config.bge_reranker_large) and Path(reranker_config.bge_reranker_large).is_dir()
@@ -34,4 +38,12 @@ class NodeRerank(NodeBase):
             raise ValueError("重排模型返回的分数数量或取值无效")
         ranked = sorted([{**doc, "rerank_score": float(score)} for doc, score in zip(docs, scores)],
                         key=lambda doc: doc["rerank_score"], reverse=True)
-        return {"reranked_docs": ranked[:self.config.top_k], "reranker_used": "local" if local else "llm"}
+        count = min(self.config.top_k, 10, len(ranked))
+        minimum = min(self.config.rerank_min_k, count)
+        for index in range(minimum, count):
+            previous, current = ranked[index - 1]["rerank_score"], ranked[index]["rerank_score"]
+            gap = previous - current
+            if gap >= self.config.rerank_gap_abs or (previous > 0 and gap / previous >= self.config.rerank_gap_ratio):
+                count = index
+                break
+        return {"reranked_docs": ranked[:count], "reranker_used": "local" if local else "llm"}

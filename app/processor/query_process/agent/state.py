@@ -15,6 +15,7 @@ class QueryGraphState(TypedDict, total=False):
     prompt: str
     answer: str
     sources: list
+    image_urls: list[str]
     item_names: list[str]
     item_candidates: list[str]
     rewritten_query: str
@@ -27,7 +28,7 @@ graph_default_state = {
     "task_id": "", "session_id": "", "original_query": "",
     "embedding_chunks": [], "hyde_embedding_chunks": [], "web_search_docs": [],
     "rrf_chunks": [], "reranked_docs": [], "prompt": "", "answer": "",
-    "sources": [], "item_names": [], "item_candidates": [], "rewritten_query": "",
+    "sources": [], "image_urls": [], "item_names": [], "item_candidates": [], "rewritten_query": "",
     "history": [], "reranker_used": "", "is_stream": False,
 }
 

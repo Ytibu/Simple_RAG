@@ -12,7 +12,11 @@ class NodeBase(ABC):
 
     def __call__(self, state):
         logger.info("【{}】查询节点开始", self.name)
+        if self.config.event_sink:
+            self.config.event_sink("progress", {"node": self.name, "status": "running"})
         result = self.process(state)
+        if self.config.event_sink:
+            self.config.event_sink("progress", {"node": self.name, "status": "completed"})
         logger.info("【{}】查询节点完成", self.name)
         return result
 

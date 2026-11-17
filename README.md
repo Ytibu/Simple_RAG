@@ -212,7 +212,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 | 地址 | 功能 |
 | --- | --- |
 | `http://127.0.0.1:8000/import` | 上传 PDF 或 Markdown，查看导入进度 |
-| `http://127.0.0.1:8000/query` | 查询已导入文档，查看引用原文并连续提问 |
+| `http://127.0.0.1:8000/` 或 `/query` | 智能咨询工作台，查询已导入文档、查看引用原文并连续提问 |
 | `http://127.0.0.1:8000/docs` | 交互式 API 文档 |
 | `http://127.0.0.1:9001` | MinIO 控制台，默认账号和密码均为 `minioadmin` |
 | `http://127.0.0.1:7000` | Attu，查看 Milvus 数据 |
@@ -245,8 +245,12 @@ uv run python -m app.processor.query_process.agent.kb_query_workflow "H3C LA2608
 | `POST /api/imports` | multipart 上传，文件字段为 `files`，返回任务 ID |
 | `GET /api/imports/{task_id}` | 获取导入进度、状态和切片数量 |
 | `POST /api/queries` | 提交问题，返回回答、引用与会话 ID |
+| `POST /api/queries/submit` | 提交后台查询，立即返回任务 ID 与 SSE 地址 |
+| `GET /api/queries/tasks/{task_id}/events` | 实时接收节点进度、答案增量和完整结果 |
 | `GET /api/queries/{session_id}/history` | 获取会话历史 |
 | `DELETE /api/queries/{session_id}/history` | 清空指定会话历史 |
+| `GET /api/query-images?uri=s3%3A...` | 获取引用图片的临时授权地址 |
+| `GET /health` | 检查服务是否存活 |
 
 PowerShell 查询示例可直接调用已启动的服务。
 
@@ -301,7 +305,7 @@ Web 上传支持同时选择多个文件。带本地图片的 Markdown 通过 CL
 | --- | --- | --- |
 | `question` | 必填 | 长度为 1–4000，空白问题返回 422 |
 | `session_id` | 自动生成 | 继续同一会话时使用上次返回值，最多 128 字符，支持字母、数字、下划线和连字符 |
-| `top_k` | `5` | 返回引用切片的最大数量，HTTP 接口范围为 1–12 |
+| `top_k` | `5` | 引用数量上限，HTTP 接口范围 1–12，动态重排最多保留 10 条 |
 | `use_hyde` | `true` | 额外生成假设性手册文本用于召回 |
 | `use_web` | `false` | 显式启用 MCP 联网搜索 |
 
@@ -326,7 +330,26 @@ $followupResult.answer
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/queries/$($queryResult.session_id)/history"
 ```
 
-每轮查询读取最近 5 轮对话用于改写，历史接口按时间顺序返回最近 20 轮。成功完成的整轮对话写入 MongoDB 的 `query_turns` 集合。页面上的“开始新会话”创建新的会话上下文，历史删除接口用于主动清除指定会话。
+每轮查询从最近 5 轮中的成功对话获取改写上下文，历史接口按时间顺序返回最近 20 轮，可用 `limit` 调整到 1–100 轮。MongoDB 的 `query_turns` 在开始处理时保存问题并标记 `processing`，随后更新为 `completed` 或 `failed`，保存改写问题、产品、引用及图片。确认产品后，相关澄清记录也会补齐产品名称。
+
+查询页默认流式输出，提供处理进度、候选产品按钮、引用原文和图片，也可关闭流式输出。Enter 发送，Shift+Enter 换行。新建会话使用新的上下文，“清空历史”删除当前会话记录。资料导入页支持拖拽及多文件选择，上传进度条显示传输进度，上传后轮询各节点执行状态。
+
+### 流式查询接口
+
+提交任务后，使用返回的 `stream_url` 接收 SSE。在仓库根目录的 PowerShell 中执行以下示例。
+
+```powershell
+$body = @{question = "H3C LA2608 支持哪些无线控制器？"; use_hyde = $true; use_web = $false} | ConvertTo-Json
+$task = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/queries/submit" `
+    -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+curl.exe -N "http://127.0.0.1:8000$($task.stream_url)"
+```
+
+事件依次包含 `ready` 握手、`progress` 节点进度、`delta` 模型增量和 `final` 完整答案，故障发送 `error`。`progress` 提供 `done_list` 与 `running_list`，`delta` 提供 `text`，`final` 提供答案、引用和 `image_urls`。每 10 秒发送空闲心跳，客户端可用 `Last-Event-ID` 恢复事件。前端使用 EventSource 自动重连，并在刷新后尝试恢复当前任务。
+
+兼容笔记中的 `POST /query`、`GET /stream/{session_id}`、`GET/DELETE /history/{session_id}` 和 `/chat.html`。请求可使用 `query` 字段，`is_stream=true` 时立即返回后台任务信息。同一会话已有任务时返回 409，应等待当前轮完成。
+
+任务事件保存在单进程内存，完成任务保留约 15 分钟，后续提交触发清理，总任务上限 128。使用单个 Uvicorn worker。服务重启后可读取 MongoDB 已保存历史，内存中的 SSE 任务需要重新提交。
 
 ## 工作流与数据组织
 
@@ -337,10 +360,10 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/queries/$($queryResult.session
 | `node_entry` | 校验文件，生成文档标识，读取 `state.local_dir` | 文档 ID、输出路径、文件类型路由 |
 | `node_pdf_to_md` | 申请 MinerU 上传地址、上传文件、轮询、下载并解压结果 | Markdown 路径及正文 |
 | `node_md_img` | 读取本地图片，上传 MinIO，按配置生成视觉描述 | 更新图片引用的正文 |
-| `node_document_split` | 按标题与长度组织切片，保留来源信息 | 切片列表 |
-| `node_item_name_recognition` | 识别文档对应的产品或主体 | 主体名称 |
-| `node_bge_embedding` | 对切片和主体生成 dense、sparse 向量 | 向量记录 |
-| `node_import_milvus` | 检查集合 schema，写入切片与主体向量 | 成功写入的切片数量 |
+| `node_document_split` | 按标题、段落和句子切分，合并同父标题短块并控制长度 | 切片列表及来源元数据 |
+| `node_item_name_recognition` | 结合文件标题和前 K 个切片识别主体，失败时采用文件标题 | 主体名称及切片回填 |
+| `node_bge_embedding` | 将主体名称与切片正文拼接生成 dense、sparse 向量，另行生成主体向量 | 带双向量的切片及主体向量 |
+| `node_import_milvus` | 检查集合 schema，写入切片与主体向量并加载集合 | 成功写入的切片数量 |
 
 Markdown 从入口直接进入图片处理节点。PDF 上传到 MinerU 云端后，解析结果中的图片和 Markdown 保持相对目录关系。
 
@@ -377,12 +400,12 @@ print(result["document_id"], result["imported_count"])
 
 | 节点 | 职责 |
 | --- | --- |
-| `node_item_name_confirm` | 结合历史改写问题，搜索主体集合，选择已入库主体或要求澄清 |
+| `node_item_name_confirm` | 结合历史提取产品名并改写问题，按匹配分自动确认或返回候选，支持用户确认后恢复原问题 |
 | `node_search_embedding` | 在主体范围内执行 BGE-M3 稠密、稀疏混合检索 |
 | `node_search_embedding_hyde` | 生成假设性手册文本，执行第二路混合检索 |
 | `node_web_search_mcp` | 请求启用时调用配置的 MCP 搜索服务 |
 | `node_rrf` | 等待召回分支完成，按文档和主键去重，融合排名 |
-| `node_rerank` | 对融合后的候选打分，保留最终 Top-K |
+| `node_rerank` | 合并本地与网页候选打分，根据分数断崖动态保留 Top-K |
 | `node_answer_output` | 根据入选原文生成答案和引用编号 |
 
 普通检索和 HyDE 每路默认召回 12 条，融合后最多保留 12 条，再由重排节点选取默认 5 条。回答上下文中的原文总长度上限为 18000 字符。HyDE 文本用于召回，最终回答依据已检索到的原文生成。
@@ -399,9 +422,11 @@ Milvus 的 `kb_chunks` 保存切片，`kb_item_names` 保存主体名称及向�
 
 ### 可选联网搜索
 
-启用 `use_web=true` 或 CLI `--web` 时，配置 `MCP_DASHSCOPE_BASE_URL` 指向可用的 MCP SSE 搜索服务。当前适配器使用 `OPENAI_API_KEY` 鉴权，支持搜索工具参数名 `query`、`search_query` 或 `q`。联网搜索依次执行连接、初始化、工具发现和搜索调用。
+启用 `use_web=true` 或 CLI `--web` 时，配置 `MCP_DASHSCOPE_BASE_URL` 指向 MCP 搜索服务。适配器使用 `OPENAI_API_KEY` 鉴权，支持 Streamable HTTP 及旧式 HTTP+SSE，依次执行初始化、工具发现和搜索调用。优先选择 `bailian_web_search`，支持参数 `query`、`search_query` 或 `q`，工具允许时传入 `count=5`。返回的 `pages` 解析为独立网页，保留标题、链接和非空摘要。
 
-MCP 分支已覆盖模拟协议测试，公网服务权限和返回质量仍需在实际服务环境中验证。
+百炼可配置 `MCP_DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp`。当前本机旧 `/sse` 地址返回空流，适配器在此情形下尝试同服务的 `/mcp` 地址，2026-11-17 实测得到 5 条带链接的网页摘要。
+
+普通检索和 HyDE 使用稠密/稀疏得分 0.8/0.2 加权，确认产品的分数 >0.85 时自动继续，0.6–0.85 时提示选择候选。两路本地召回通过 RRF 融合，再与网页结果统一精排。动态截断默认至少保留 3 条，最多受 `top_k` 和 10 条硬上限约束。相邻分数下降达到绝对差 0.5 或相对差 25% 时截断。相关参数集中在 `QueryConfig`。
 
 ## 测试与故障排查
 
@@ -428,7 +453,15 @@ uv run python -m app.tool.verify_import --resume "temp-files/example-task/state.
 
 查询验收通过 FastAPI TestClient 调用真实路由，连续提问两轮，检查本地重排、MongoDB 历史以及引用切片的 Milvus 回读。默认报告路径为 `temp-files/query-verification.json`。该脚本可以直接运行，独立于 Uvicorn 监听端口。
 
-当前已完成的联调覆盖 LA2608 文档的导入和连续查询。查询能返回“通过 3G/4G 网络连接，仅支持 H3C 无线控制器”，并引用手册原文；手册缺少恢复出厂设置说明时，回答明确提示资料不足。先前完整自动化测试通过 52 项，后续修改可执行上面的测试命令重新验证。
+若要验证已启动服务的真实 HTTP 流式传输，可执行以下命令。`--confirm-product` 指定遇到澄清时选择的实际候选，报告同时记录澄清轮次。验收会访问真实模型、MCP 和数据库，并检查引用图片能否通过 HTTP 读取。
+
+```powershell
+uv run python -m app.tool.verify_query --stream --web --base-url http://127.0.0.1:8000 --confirm-product "H3C LA2608 室内无线网关" --output temp-files/query-stream-verification.json
+```
+
+当前已完成的联调覆盖 LA2608 文档的导入和连续查询。查询能返回“通过 3G/4G 网络连接，仅支持 H3C 无线控制器”，并引用手册原文；手册缺少恢复出厂设置说明时，回答明确提示资料不足。2026-11-17 对照七节点笔记补齐功能后，56 项离线测试通过，并重新完成一次真实云解析、视觉描述、主体识别、本地向量化和存储回读，生成 7 条切片、1 条主体记录、4 个图片对象，向量维度为 1024。报告保存在 `temp-files/import-node-alignment-20261117/acceptance.json`，后续修改可执行上面的测试命令重新验证。
+
+同日补齐 Web 与查询功能后，68 项离线测试通过。真实 HTTP 流程完成产品澄清、候选确认和两轮连续回答，每轮均收到 14 条节点进度事件，答案增量分别为 16、38 条。两轮各返回 5 个来源，MongoDB 回读 3 轮，Milvus 原文及 7 个图片访问检查通过。首个 SSE 事件约 15–32 毫秒，本机 CPU 下两轮处理分别约 78、74 秒。报告为 `temp-files/query-document-alignment-20261117.json`，联网搜索另有 5 条真实网页结果记录于 `temp-files/web-search-alignment-20261117.json`。前端完成脚本语法和事件模拟测试，浏览器视觉效果未重新验收。
 
 | 现象 | 检查方法 |
 | --- | --- |

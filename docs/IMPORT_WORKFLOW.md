@@ -2,7 +2,7 @@
 
 ## 当前范围与节点
 
-所有 PDF 统一使用 MinerU 云 API 解析，包括文字型 PDF 和扫描件；OCR、版面分析、表格及公式处理均由云服务完成。项目不再包含本地 PDF 解析器或解析模式切换。Markdown 输入直接进入图片处理节点。检索功能尚未实现。
+所有 PDF 统一使用 MinerU 云 API 解析，包括文字型 PDF 和扫描件。OCR、版面分析、表格及公式处理均由云服务完成。Markdown 输入直接进入图片处理节点，导入结果供查询工作流检索。
 
 统一工作流位于 `app/processor/import_process/agent/kb_import_workflow.py`，旧入口 `main_praph.py` 复用同一张图。
 
@@ -10,11 +10,17 @@
 | --- | --- |
 | `node_entry` | 校验 PDF/Markdown 文件，生成文档标识，使用调用方的 `state.local_dir` 创建输出目录并设置路由 |
 | `node_pdf_to_md` | 上传 PDF 到 MinerU 云 API，轮询、下载并解压结果，将实际 Markdown 路径写入状态 |
-| `node_md_img` | 上传 Markdown 中的本地图片到 MinIO；启用 LLM 时生成视觉描述 |
-| `node_document_split` | 按 Markdown 标题及长度切片，保留标题、父标题、来源和顺序 |
-| `node_item_name_recognition` | 使用文本模型识别主体；禁用 LLM 时使用文件名，调用方也可直接指定主体 |
-| `node_bge_embedding` | 本地 BGE-M3 分批生成切片和主体的稠密、稀疏向量，校验数量及维度 |
-| `node_import_milvus` | 检查或创建集合，upsert 切片和主体向量，全部成功后报告导入数量 |
+| `node_md_img` | 使用文件标题及图片前后文生成视觉描述，限流调用模型，上传图片并替换本地引用 |
+| `node_document_split` | 按标题、段落及句子边界切分长内容，合并同父标题短块，保留来源和顺序 |
+| `node_item_name_recognition` | 使用前 K 个切片及文件标题识别主体，回填切片并更新 `chunks.json`；禁用 LLM 或识别失败时使用文件标题，也可直接指定主体 |
+| `node_bge_embedding` | 将主体名称与正文拼接，本地 BGE-M3 分批生成双向量；同步更新 `chunks`、`embeddings_content`，单独保留主体向量 |
+| `node_import_milvus` | 检查或创建集合，upsert 切片和主体向量，加载两个集合后报告成功数量 |
+
+流程沿用七节点顺序。PDF 经过全部节点，Markdown 跳过 PDF 转换节点。主体识别文档中的主体向量生成及存储操作，分别由第六、第七节点统一完成。
+
+切分上限为 `ImportConfig.max_content_length`，短块阈值为 `min_content_length`。短块仅在父标题相同且合并后不超过上限时合并。代码围栏按字符类型和长度配对，围栏内的 `#` 保留为正文。无标题文本使用文件标题。切片 `metadata` 保存 `file_title`、`part`、来源和顺序。
+
+主体识别的空结果、无效 JSON 或模型异常会记录警告并采用文件标题，后续继续向量化和入库。PDF 解析、图片处理、向量生成及存储失败会终止导入，任务状态记录具体失败节点。
 
 ## MinerU 云 API 配置
 
@@ -88,7 +94,7 @@ MinIO 不自动公开桶，Markdown 保存持久的 `s3://bucket/object` 引用�
 .venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-共 26 项测试，覆盖真实图编排、PDF 云 API 调用协议、失败与超时、凭据隔离、归档路径校验、图片处理、切片、向量校验及 Milvus schema。
+测试覆盖真实图编排、PDF 云 API 调用协议、失败与超时、凭据隔离、归档路径校验、图片上下文、短块合并、代码围栏、主体识别兜底、向量输入及 Milvus schema。模型与存储使用替身的测试用于验证编排和数据传递，真实服务验收使用下方脚本。
 
 完整真实验收会调用 API 并写存储：
 
@@ -100,6 +106,7 @@ MinIO 不自动公开桶，Markdown 保存持久的 `s3://bucket/object` 引用�
 
 ## 验证历史与处理记录
 
+- 2026-11-17 对照七节点笔记补齐功能后，56 项离线测试通过。真实导入同一份 H3C LA2608 手册，完成 MinerU 云解析、4 张图片的视觉描述与 MinIO 上传、主体识别、本地 BGE-M3 向量化及 Milvus 入库回读。10 个初切块合并为 7 个最终切片，主体为 `H3C LA2608 室内无线网关`，主体集合 1 条记录，向量维度 1024。文档标识为 `33f2649b4a9845ce82d13cd234ea5af7`，报告为 `temp-files/import-node-alignment-20261117/acceptance.json`。首次请求受执行环境网络限制，恢复网络访问后从入口检查点继续完成，切片与向量备份一致性检查通过。
 - 早期本地解析曾报 `Required dependency not installed`，旧方案临时增加文字层提取；这些本地解析实现现已移除。
 - 初次模型调用出现 `401 Incorrect API key`，后续配置有效密钥和最新 base URL 后调用通过。视觉模型曾返回 `404 Model not exist`，调整为服务支持的 `qwen3-vl-plus` 后通过。
 - 修正过 BGE 本地目录层级、BGE 与云嵌入维度混用、路由静态方法签名及配置重构中的导出缺失问题。

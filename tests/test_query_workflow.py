@@ -21,7 +21,7 @@ class QueryWorkflowTests(unittest.TestCase):
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch(NODES + "node_item_name_confirm.search",
-                                  return_value=[{"item_name": "LA2608"}]))
+                                  return_value=[{"item_name": "LA2608", "score": 0.95}]))
         item = stack.enter_context(patch(NODES + "node_item_name_confirm.ask_model",
                                   return_value={"status": "selected", "item_names": ["LA2608"]}))
         stack.enter_context(patch(NODES + "node_search_embedding.search", return_value=[DOC]))
@@ -55,23 +55,24 @@ class QueryWorkflowTests(unittest.TestCase):
 
     def test_missing_item_short_circuits(self):
         stack, item, answer = self.graph_patches()
-        with stack:
+        with stack, patch(NODES + "node_item_name_confirm.search", return_value=[]):
             item.return_value = {"status": "missing", "item_names": []}
             result = KBQueryWorkflow().run(create_default_state(original_query="其他型号？"))
         self.assertIn("未找到", result["answer"])
         answer.assert_not_called()
 
-    def test_unknown_model_item_is_rejected(self):
+    def test_unknown_product_is_not_returned_as_confirmed(self):
         stack, item, _ = self.graph_patches()
-        with stack:
+        with stack, patch(NODES + "node_item_name_confirm.search", return_value=[{"item_name": "LA2608", "score": 0.2}]):
             item.return_value = {"status": "selected", "item_names": ["invented"]}
-            with self.assertRaises(ValueError):
-                KBQueryWorkflow().run(create_default_state(original_query="使用？"))
+            result = KBQueryWorkflow().run(create_default_state(original_query="使用？"))
+        self.assertEqual(result["item_names"], [])
+        self.assertIn("未找到", result["answer"])
 
     def test_history_rewrites_followup(self):
         stack, item, _ = self.graph_patches()
         with stack:
-            item.side_effect = ["LA2608如何重置？", {"status": "selected", "item_names": ["LA2608"]}]
+            item.return_value = {"rewritten_query": "LA2608如何重置？", "item_names": ["LA2608"]}
             result = KBQueryWorkflow(QueryConfig(reranker="llm")).run(create_default_state(
                 original_query="它如何重置？", history=[{"question": "LA2608说明", "answer": "说明"}]))
         self.assertEqual(result["rewritten_query"], "LA2608如何重置？")
@@ -89,7 +90,8 @@ class QueryWorkflowTests(unittest.TestCase):
             KBQueryWorkflow().run(create_default_state(original_query="  "))
 
     def test_empty_knowledge_base(self):
-        with patch(NODES + "node_item_name_confirm.search", return_value=[]):
+        with patch(NODES + "node_item_name_confirm.search", return_value=[]), patch(
+                NODES + "node_item_name_confirm.ask_model", return_value={"item_names": ["LA2608"]}):
             result = KBQueryWorkflow().run(create_default_state(original_query="LA2608？"))
         self.assertIn("先导入", result["answer"])
 
@@ -193,6 +195,8 @@ class QueryApiTests(unittest.TestCase):
         response = self.client.get("/query")
         self.assertEqual(response.status_code, 200)
         self.assertIn('id="query-form"', response.text)
+        self.assertEqual(self.client.get("/").text, response.text)
+        self.assertEqual(self.client.get("/static/workspace.css").status_code, 200)
         self.assertEqual(self.client.get("/static/query.js").status_code, 200)
 
 
@@ -212,11 +216,13 @@ class QueryHistoryTests(unittest.TestCase):
         from app.services.queries import query
         with patch("app.clients.query_history.get_history", return_value=[]), patch(
                 "app.services.queries.KBQueryWorkflow") as workflow, patch(
-                "app.clients.query_history.save_turn") as save:
+                "app.clients.query_history.save_turn") as save, patch(
+                "app.clients.query_history.begin_turn"), patch("app.clients.query_history.fail_turn") as fail:
             workflow.return_value.run.side_effect = RuntimeError("model failed")
             with self.assertRaises(RuntimeError):
                 query("问题")
         save.assert_not_called()
+        fail.assert_called_once()
 
 
 if __name__ == "__main__":

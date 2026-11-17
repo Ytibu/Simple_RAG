@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 
+from app.core.logger import logger
 from app.processor.import_process.agent.node_base import NodeBase
 from app.processor.import_process.exceptions import DocumentSplitError
 
@@ -23,22 +24,27 @@ class NodeDocumentSplit(NodeBase):
             separators=["\n\n", "\n", "。", "！", "？", ";", " ", ""])
         headings = []
         section = []
-        chunks = []
+        sections = []
 
         def flush():
-            for text in splitter.split_text("\n".join(section)):
-                index = len(chunks)
-                chunks.append({"chunk_id": int.from_bytes(hashlib.sha256(f"{state['document_id']}:{index}".encode()).digest()[:8], "big") & ((1 << 63) - 1),
-                               "content": text, "title": headings[-1][1] if headings else state["file_title"],
-                               "parent_title": " / ".join(h[1] for h in headings[:-1]),
-                               "metadata": {"document_id": state["document_id"], "index": index,
-                                            "source": state["local_file_path"]}})
+            title = headings[-1][1] if headings else state["file_title"]
+            parent = " / ".join(h[1] for h in headings[:-1]) or title
+            for part, text in enumerate(splitter.split_text("\n".join(section)), start=1):
+                sections.append({"content": text, "title": title, "parent_title": parent,
+                                 "metadata": {"file_title": state["file_title"], "part": part}})
 
-        fenced = False
+        fence = None
         for line in state["md_content"].splitlines():
-            if line.lstrip().startswith(("```", "~~~")):
-                fenced = not fenced
-            heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line) if not fenced else None
+            marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if marker:
+                token, suffix = marker.groups()
+                if fence is None:
+                    fence = token
+                elif token[0] == fence[0] and len(token) >= len(fence) and not suffix.strip():
+                    fence = None
+                section.append(line)
+                continue
+            heading = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line) if fence is None else None
             if heading:
                 flush()
                 section = []
@@ -47,8 +53,24 @@ class NodeDocumentSplit(NodeBase):
                 headings.append((level, heading.group(2)))
             section.append(line)
         flush()
+        chunks = []
+        for section in sections:
+            previous = chunks[-1] if chunks else None
+            if (previous and len(previous["content"]) < self.config.min_content_length
+                    and previous["parent_title"] == section["parent_title"]
+                    and len(previous["content"]) + 2 + len(section["content"]) <= limit):
+                previous["content"] += "\n\n" + section["content"]
+            else:
+                chunks.append(section)
         if not chunks:
             raise DocumentSplitError("未生成有效切片", node_name=self.name)
+        for index, chunk in enumerate(chunks):
+            digest = hashlib.sha256(f"{state['document_id']}:{index}".encode()).digest()
+            chunk["chunk_id"] = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+            chunk["metadata"].update(document_id=state["document_id"], index=index,
+                                     source=state["local_file_path"])
+        logger.info("文档切分完成，原文 {} 行，初切 {} 块，合并后 {} 块",
+                    len(state["md_content"].splitlines()), len(sections), len(chunks))
         Path(state["split_path"]).write_text(json.dumps(chunks, ensure_ascii=False, indent=2), encoding="utf-8")
         state["chunks"] = chunks
         return state

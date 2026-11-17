@@ -48,8 +48,8 @@ class NodeBase(ABC):
             result = self.process(state)
             add_done_task(task_id, self.name)
             if self.name == "node_import_milvus":
-                update_task_status(task_id, "completed")
                 set_task_result(task_id, "imported_count", str(result["imported_count"]))
+                update_task_status(task_id, "completed")
             return result
         except Exception as exc:
             remove_running_task(task_id, self.name)

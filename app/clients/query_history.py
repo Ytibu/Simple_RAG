@@ -23,16 +23,42 @@ def get_collection():
 def get_history(session_id, limit=5):
     turns = list(get_collection().find({"session_id": session_id}, {"_id": 0})
                  .sort([("created_at", -1), ("_id", -1)]).limit(limit))
-    return [{"question": t["question"], "answer": t["answer"], "item_names": t["item_names"]}
+    return [{"question": t["question"], "answer": t.get("answer", ""), "item_names": t.get("item_names", []),
+             "task_id": t.get("task_id", ""), "sources": t.get("sources", []),
+             "image_urls": t.get("image_urls", []), "item_candidates": t.get("item_candidates", []),
+             "rewritten_query": t.get("rewritten_query", ""), "status": t.get("status", "completed")}
             for t in reversed(turns)]
 
 
-def save_turn(session_id, state):
+def begin_turn(session_id, state):
     get_collection().insert_one({
+        "session_id": session_id, "task_id": state["task_id"], "question": state["original_query"],
+        "answer": "", "item_names": [], "sources": [], "status": "processing",
+        "created_at": datetime.now(timezone.utc)})
+
+
+def save_turn(session_id, state):
+    get_collection().update_one({"session_id": session_id, "task_id": state["task_id"]}, {"$set": {
         "session_id": session_id, "task_id": state["task_id"],
         "question": state["original_query"], "answer": state["answer"],
         "item_names": state["item_names"], "sources": state["sources"],
-        "created_at": datetime.now(timezone.utc)})
+        "item_candidates": state.get("item_candidates", []), "image_urls": state.get("image_urls", []),
+        "rewritten_query": state.get("rewritten_query", ""), "status": "completed"},
+        "$setOnInsert": {"created_at": datetime.now(timezone.utc)}}, upsert=True)
+
+
+def fail_turn(session_id, task_id):
+    get_collection().update_one({"session_id": session_id, "task_id": task_id}, {"$set": {
+        "status": "failed", "answer": "本次查询失败，请重新发送问题。"}})
+
+
+def confirm_history(session_id, history, item_names):
+    """仅回填本会话中与确认产品有关的澄清轮次。"""
+    ids = [turn["task_id"] for turn in history if turn.get("task_id") and not turn.get("item_names")
+           and set(turn.get("item_candidates", [])) & set(item_names)]
+    if ids:
+        get_collection().update_many({"session_id": session_id, "task_id": {"$in": ids}},
+                                     {"$set": {"item_names": item_names}})
 
 
 def clear_history(session_id):

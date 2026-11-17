@@ -46,6 +46,7 @@ class NodeMdImg(NodeBase):
         try:
             source = Path(state["md_path"])
             content = source.read_text(encoding="utf-8-sig")
+            image_root = Path(state["local_dir"]).resolve() if state.get("restrict_image_paths") else None
             cache = {}
             times = deque()
 
@@ -54,10 +55,17 @@ class NodeMdImg(NodeBase):
                 if urlsplit(reference).scheme.lower() in {"http", "https", "data"}:
                     return match.group(0)
                 path = (source.parent / unquote(reference)).resolve()
+                if image_root is not None and not path.is_relative_to(image_root):
+                    raise ValueError("图片引用超出本次导入目录")
                 if not path.is_file() or path.suffix.lower() not in self.config.image_extensions:
                     raise ValueError(f"图片不存在或格式不支持：{reference}")
                 if path not in cache:
-                    context = content[max(0, match.start() - self.config.img_content_length):match.start()]
+                    context = (
+                        f"文件标题：{state['file_title']}\n上文："
+                        + content[max(0, match.start() - self.config.img_content_length):match.start()]
+                        + "\n下文："
+                        + content[match.end():match.end() + self.config.img_content_length]
+                    )
                     description = ""
                     if self.config.use_llm:
                         apply_api_rate_limit(times, self.config.requests_per_minute)
